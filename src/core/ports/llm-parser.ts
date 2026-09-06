@@ -1,4 +1,4 @@
-import type { CurrencyCode } from '../core/shared/common';
+import type { CurrencyCode } from './common';
 
 /**
  * M6 — the provider-neutral LLM port (M1 §2 repo layout: `ports/ ... llm parser`).

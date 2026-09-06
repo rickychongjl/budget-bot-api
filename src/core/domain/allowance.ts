@@ -1,4 +1,4 @@
-import type { MinorUnits } from '../shared/common';
+import type { MinorUnits } from '../ports/common';
 
 /**
  * Pure daily-allowance formula (M1 §2, M5).

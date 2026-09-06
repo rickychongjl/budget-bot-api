@@ -59,7 +59,7 @@ Metrics matter once there's traffic to measure — building dashboards before th
 ---
 
 ## Task checklist (this pass)
-1. Migration for `parse_event` (`infrastructure/database/schema/observability.ts`) — done as part of M6's PR, not a separate one.
+1. Migration for `parse_event` (`db/schema/observability.ts`) — done as part of M6's PR, not a separate one.
 2. Add a lightweight logging lint/review step (even a code-review checklist item is enough for this pass) confirming no PR introduces a log line with message text, bot tokens, webhook secrets, or Telegram identifiers.
 3. Confirm `parse_event.user_id`'s `on delete set null` actually fires correctly against M2's cascade delete (test this specifically — it's the one row that's supposed to survive account deletion).
 

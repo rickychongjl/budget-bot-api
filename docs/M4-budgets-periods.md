@@ -114,7 +114,7 @@ interface BudgetService {
 
 ## Task checklist
 1. Migration for `budget` + `budget_period` (coordinate with M3's `category`/`transaction` migration). **Also coordinate with M2's agent on the `period_anchor_date` column on `app_user`** — it lives in M2's schema file but this module is the one that interprets it; confirm the exact shape together before either side writes a migration against it.
-2. Implement `periodFor` as a **pure function with an injected clock** in `core/budgets/period.ts` — no DB access — so it's unit-testable at arbitrary instants.
+2. Implement `periodFor` as a **pure function with an injected clock** in `core/domain` — no DB access — so it's unit-testable at arbitrary instants.
 3. Implement `ensurePeriod` with the upsert-then-select pattern above; verify it's race-safe under concurrent calls for the same `(budget_id, period_key)`.
 4. Implement `setCap` — writes both the standing `budget` row and, if a `budget_period` already exists for the current period, updates its snapshot too (only the current period's snapshot, never a past one). Include the "doesn't affect past transactions" warning in the confirmation copy.
 5. Implement `deactivate` — `is_active = false`, preserving historical `budget_period` rows (they still reference the now-inactive `budget`).

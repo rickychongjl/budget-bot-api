@@ -101,7 +101,7 @@ create index usage_counter_daily on usage_counter (user_id, local_date);
 ---
 
 ## Task checklist
-1. Migration for `entitlement` + revised `usage_counter` (`infrastructure/database/schema/entitlement.ts`).
+1. Migration for `entitlement` + revised `usage_counter` (`db/schema/entitlement.ts`).
 2. Implement `admitMessage` as a single atomic transaction: check daily quota (Free only) + rolling window together, then insert the `usage_counter` row keyed by `message_id` — a duplicate `message_id` (Telegram redelivery) is a no-op admit, not a second count.
 3. Implement `assertAllowed` for: category creation (10/30, all-categories-count), reminder enablement (1/5), requested downgrade (≤10 categories AND ≤1 reminder-enabled).
 4. Implement `assessDowngrade` returning what must be removed if not yet eligible — never silently delete anything itself (that's M3's job, and out of scope this pass anyway per the M3 gap).

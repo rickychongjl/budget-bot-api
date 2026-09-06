@@ -134,7 +134,7 @@ Suppression was considered and explicitly rejected: **the reminder still sends e
 
 ## Task checklist
 1. Migration for the resolved `daily_allowance_send` (per-category targets, `not_applicable` default status).
-2. Implement `periodFor`-consuming, pure `computeTarget(remaining, daysLeft): MinorUnits` in `core/allowance/daily-target.ts`, injected-clock, unit-testable without a DB.
+2. Implement `periodFor`-consuming, pure `computeTarget(remaining, daysLeft): MinorUnits` in `core/domain`, injected-clock, unit-testable without a DB.
 3. Implement the cron handler: due-user query → subrequest fan-out → `/internal/send-allowance` handler that gathers reminder-eligible categories, ensures/insert target rows, revalidates, builds one bundled message, calls M7's `MessageSender` once, marks the bundle's rows sent/failed/skipped together.
 4. Implement the pre-send revalidation (category exists/retained/reminder-enabled/active budget) as a guard that can drop individual categories from a bundle without failing the whole send.
 5. Implement `availableToday` with on-demand compute-and-persist for a category with no row yet today (status `not_applicable` if it has no reminder, since it'll never be sent).

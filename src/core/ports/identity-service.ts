@@ -1,4 +1,4 @@
-import type { Channel, CurrencyCode, LocalDate, LocalTime, UserId } from '../shared/common';
+import type { Channel, CurrencyCode, LocalDate, LocalTime, UserId } from './common';
 
 /**
  * M2 — Identity & Accounts. Owns who a user *is*, independent of how they reach the

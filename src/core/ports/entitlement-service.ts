@@ -1,4 +1,4 @@
-import type { Id, Instant, RefusalCode, Tier, UserId } from '../shared/common';
+import type { Id, Instant, RefusalCode, Tier, UserId } from './common';
 
 /**
  * M8 — Entitlements & Limits. One place that answers "is this user allowed to do

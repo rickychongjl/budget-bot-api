@@ -104,11 +104,11 @@ M10 (marketing site) is a **separate deployable and repo** — an Astro site alr
 
 The schema has a real coupling that isn't obvious from reading one module page at a time: **M3's `transaction` table has a foreign key into M4's `budget_period`, and M4's `budget` table has a foreign key into M3's `category`.** Two modules, two owning agents, one shared migration graph. Two consequences:
 
-- **Split the schema into per-module files** under `infrastructure/database/schema/` (`identity.ts`, `category.ts`, `budget.ts`, `transaction.ts`, `allowance.ts`, `entitlement.ts`, `observability.ts`, `platform.ts`), barrel-exported from `infrastructure/database/schema/index.ts`. This is the single highest-leverage thing M1 can do to keep parallel agents from fighting over one file.
+- **Split `db/schema.ts` into per-module files** (`db/schema/identity.ts`, `db/schema/category.ts`, `db/schema/budget.ts`, `db/schema/transaction.ts`, `db/schema/allowance.ts`, `db/schema/entitlement.ts`, `db/schema/observability.ts`, `db/schema/platform.ts`), barrel-exported from `db/schema/index.ts`. This is the single highest-leverage thing M1 can do to keep parallel agents from fighting over one file.
 - **M3 and M4 should be treated as one coordinated workstream**, not two agents who never talk. Either one agent does both, or two agents share a worktree/branch until the schema is settled, then split into separate PRs for the service logic.
 
 ### Phase 0 — Platform & Contracts (sequential, do this first, one agent)
-**M1.** Scaffold `budge-bot-api`, wrangler config, CI, per-module schema files, and — critically — commit the **already-specified TypeScript interfaces** from every module page (`IdentityService`, `LedgerService`, `BudgetService`, `DailyAllowanceService`, `EntitlementService`, `MessageSender`/`InboundMessage`) into each module's own folder under `core/` (per `CLAUDE.md`'s ports-and-adapters structure — no global `core/ports/`) as typed stubs. This is what lets Phase 1 agents work genuinely in parallel: they implement against a contract that's already fixed, instead of inventing their own and reconciling later. Phase 0 must merge before Phase 1 branches.
+**M1.** Scaffold `budge-bot-api`, wrangler config, CI, per-module schema files, and — critically — commit the **already-specified TypeScript interfaces** from every module page (`IdentityService`, `LedgerService`, `BudgetService`, `DailyAllowanceService`, `EntitlementService`, `MessageSender`/`InboundMessage`) into `core/ports/` as typed stubs. This is what lets Phase 1 agents work genuinely in parallel: they implement against a contract that's already fixed, instead of inventing their own and reconciling later. Phase 0 must merge before Phase 1 branches.
 
 ### Phase 1 — Independent modules (parallel worktrees)
 - **M2** Identity & Accounts
@@ -205,7 +205,7 @@ M1–M6 have no open product questions left. What remains is M7/M11's routing-or
 - Uniqueness and conditional uniqueness are database constraints (partial unique indexes), not application checks.
 - Enumerations are `text` with a `check` constraint, never a Postgres enum.
 - Forward-only migrations via Drizzle Kit; generated SQL is committed and is the source of truth.
-- Each module's pure calculations (e.g. `core/budgets/period.ts`, `core/allowance/daily-target.ts`) are pure: an injected `Clock`, no `Date.now()`, no direct DB handle — this is what makes period/allowance maths unit-testable at arbitrary instants and across daylight-saving transitions.
+- Domain code (`core/domain`) is pure: an injected `Clock`, no `Date.now()`, no direct DB handle — this is what makes period/allowance maths unit-testable at arbitrary instants and across daylight-saving transitions.
 - Test tiers: unit (pure domain, no DB), integration (against a real Neon branch — the constraints are doing real work, a mock wouldn't enforce them), eval (M6's versioned NLP set), end-to-end (one deployed-staging webhook round trip).
 
 ---

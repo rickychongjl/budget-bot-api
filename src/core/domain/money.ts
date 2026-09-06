@@ -1,4 +1,4 @@
-import type { CurrencyCode, MinorUnits } from './common';
+import type { CurrencyCode, MinorUnits } from '../ports/common';
 
 /**
  * Pure money helpers (M1 §2). Money is `bigint` minor units everywhere; a float never

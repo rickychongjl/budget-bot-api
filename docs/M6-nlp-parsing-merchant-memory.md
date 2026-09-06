@@ -122,7 +122,7 @@ create index parse_event_created on parse_event (created_at);
 ---
 
 ## Task checklist
-1. Migration for `merchant_category_mapping` and `parse_event` (`infrastructure/database/schema/observability.ts` for the latter, per M1's file split).
+1. Migration for `merchant_category_mapping` and `parse_event` (`db/schema/observability.ts` for the latter, per M1's file split).
 2. Implement `IMessageNormalizer`, `IMechanicalTransactionParser`, `IMerchantMappingRepository`, `ILlmTransactionParser`, `ITransactionCandidateValidator` as separate, focused components — not one large `if/else` chain.
 3. Wire the routing decision exactly as the illustrative code above, calling into M3 (`LedgerService.record`) and M5 (allowance recalculation trigger) at the end, not owning persistence itself.
 4. Build the versioned evaluation set (100–200 realistic Australian expense messages) covering: clear expenses/income, AU currency/date expressions, multiple amounts, refunds/reimbursements, corrections/deletions, unknown/multi-category merchants, spelling mistakes/shorthand.

@@ -1,4 +1,4 @@
-import type { CurrencyCode, Id, Instant, LocalDate, MinorUnits, UserId } from '../shared/common';
+import type { CurrencyCode, Id, Instant, LocalDate, MinorUnits, UserId } from './common';
 
 /**
  * M3 — Categories & Ledger. The system of record for what the user spent. Every

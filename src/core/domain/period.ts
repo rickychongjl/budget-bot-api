@@ -1,5 +1,5 @@
-import type { LocalDate } from '../shared/common';
-import type { Period } from './budget-service';
+import type { LocalDate } from '../ports/common';
+import type { Period } from '../ports/budget-service';
 
 /**
  * Pure monthly-period derivation (M1 §2, M4). Monthly only this pass.

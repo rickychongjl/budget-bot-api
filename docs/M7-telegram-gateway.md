@@ -112,7 +112,7 @@ A user never sees a stack trace, error code, or the word "exception." Three outc
 ---
 
 ## Task checklist
-1. Migration for `inbound_update` (`infrastructure/database/schema/platform.ts` per M1's file split).
+1. Migration for `inbound_update` (`db/schema/platform.ts` per M1's file split).
 2. Webhook handler: secret verification → dedup insert → 200 → `ctx.waitUntil` background processing.
 3. Implement routing per M11's revised order (above), not the page's original order.
 4. Implement each command from M11's catalogue, calling the owning module's service — this module contains no business logic itself.

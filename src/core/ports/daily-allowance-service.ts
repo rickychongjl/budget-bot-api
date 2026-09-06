@@ -1,4 +1,4 @@
-import type { Id, Instant, LocalDate, MinorUnits, UserId } from '../shared/common';
+import type { Id, Instant, LocalDate, MinorUnits, UserId } from './common';
 
 /**
  * M5 — Daily Allowance & Scheduler. Turns a cycle cap into one number the user can

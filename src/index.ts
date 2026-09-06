@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { SystemClock } from './core/shared/clock';
+import { SystemClock } from './core/ports/clock';
 
 /**
  * Worker entrypoint — `fetch` + `scheduled` handlers and the binding surface (M1 §2).
