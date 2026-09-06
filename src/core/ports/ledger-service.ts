@@ -34,6 +34,21 @@ export interface ValidatedCandidate {
   parseConfidence?: number;
 }
 
+/**
+ * A `category` row (M3's SQL). Added by M2 (Phase 1) alongside `createCategory` —
+ * onboarding step 4 hands categories off to M3 and needs the id back. Only the shape
+ * M2 relies on (`id`, `name`) is load-bearing; M3 may refine the rest.
+ */
+export interface Category {
+  id: Id;
+  userId: UserId;
+  name: string;
+  normalizedName: string;
+  sortOrder: number;
+  isArchived: boolean;
+  createdAt: Instant;
+}
+
 export interface Transaction {
   id: Id;
   userId: UserId;
@@ -74,6 +89,17 @@ export interface Page<T> {
 }
 
 export interface LedgerService {
+  /**
+   * **Added to M3's contract by M2 (Phase 1) — see build-log, M2 "Open questions".**
+   * Onboarding step 4 ("fill in categories + caps") hands each draft category to M3;
+   * the original interface had no category-creation method (`record` only creates one
+   * as a side effect of a transaction). M3 owns the body: normalise the name, enforce
+   * `unique (user_id, normalized_name)`, and check capacity with M8 (M3 checklist
+   * step 5) — M2 also calls `assertAllowed` before this, but M3's check is the
+   * atomic one.
+   */
+  createCategory(userId: UserId, name: string): Promise<Category>;
+
   record(userId: UserId, candidate: ValidatedCandidate): Promise<Transaction>;
   correct(userId: UserId, transactionId: Id, patch: TransactionPatch): Promise<Transaction>;
   softDelete(userId: UserId, transactionId: Id): Promise<void>;

@@ -110,3 +110,142 @@ question it hit. Read between PR reviews (master plan §7). Newest last.
    `foo: T | undefined`. If it causes friction for a Phase 1 agent, it's a one-line
    tsconfig change — but it catches real bugs around optional patch fields, so I'd
    keep it.
+
+---
+
+## M2 — Identity & Accounts — 2026-09-06
+
+**Branch:** `worktree-agent-a5e94a5d51a0eca4a` · **Phase:** 1
+
+### Built
+
+- **Schema** `src/db/schema/identity.ts` — `app_user` + `channel_connection`,
+  column-for-column the SQL in M2's plan: uuid PKs `gen_random_uuid()`, `timestamptz`
+  everywhere, `period_anchor_date` a nullable `date`, `reminder_local_time time default
+  '07:00'`, `status text check (…)`, `channel text check (channel in ('telegram'))`,
+  `unique (channel, external_id)`, `index channel_connection_user`, FK
+  `on delete cascade`. Generated migration `src/db/migrations/0000_sturdy_warbird.sql`
+  + `meta/` committed — the first real migration in the repo (M1's was the no-op).
+- **`IdentityServiceImpl`** (`src/core/identity/identity-service.ts`) behind an
+  `IdentityRepository` seam (`repository.ts`), with `DrizzleIdentityRepository`
+  (`drizzle-repository.ts`) as the production edge and `InMemoryIdentityRepository`
+  (`src/core/testing/`) for unit tests. Every write takes `now` from the injected
+  `Clock`; no `Date.now()` in the module.
+  - `register` — one transaction: insert `app_user`, then `insert channel_connection …
+    on conflict (channel, external_id) do nothing returning *`; no row back ⇒
+    `tx.rollback()` (discards the orphan user) and return the winner's connection. The
+    constraint is the idempotency mechanism; the read-first fast path is an
+    optimisation only. A returning `/start` refreshes `chat_id`/`username` and sets
+    `is_active = true` (un-does M5's 403 deactivation) — never a second user.
+  - `setInitialTimezone` — `update app_user set timezone = $1 where id = $2 and
+    timezone = ''`; the set-once guarantee is the predicate. Claimed ⇒ done; not
+    claimed and stored value identical ⇒ silent no-op (redelivered callback); anything
+    else ⇒ `TIMEZONE_IMMUTABLE`. Input is canonicalised via `Intl` so
+    `australia/brisbane` stores as `Australia/Brisbane`.
+  - `updateSettings` — runtime guard behind the type: `'timezone' in patch` ⇒
+    `TIMEZONE_IMMUTABLE` **regardless of value**, before anything else is applied
+    (no partial write). Unknown keys ⇒ `INVALID_ARGUMENT`. `currencyCode` change with
+    any transaction ⇒ `CURRENCY_LOCKED` (asks M3 via `history(userId, { limit: 1 })`);
+    same-value ⇒ allowed no-op. `periodAnchorDate` is a bare setting write (M4 derives
+    periods; nothing rewritten); can't be cleared once set. `reminderLocalTime` stored
+    only — M5 computes today's target alone, so it affects the next send, never
+    backfills. All-no-op patches don't bump `updated_at`.
+  - `exportAccount` — throws `IdentityError('NOT_YET_AVAILABLE', 'not implemented…')`
+    per master plan §5.8. `deleteAccount` — `delete from app_user`, cascade does the
+    rest; idempotent (retried delete is a no-op).
+- **Onboarding state machine** `src/core/identity/onboarding.ts` — `OnboardingService`
+  with `begin(userId, saved?)` / `apply(state, input)`, channel-agnostic: returns an
+  `OnboardingPrompt` (structural, M7 renders it) + next `OnboardingState` (serialisable
+  via `encodeOnboardingState`/`decodeOnboardingState`, since the cap is a `bigint`).
+  Steps: timezone (curated AU list + full IANA search over `Intl.supportedValuesOf`)
+  → currency (default AUD, omit to accept) → budget start date (suggests today in the
+  user's zone from the clock) → categories+caps (draft list, "Food" pre-seeded,
+  editable/removable, bounded 10/30) → reminder selection (1/5). Hand-off on confirm:
+  `assertAllowed(create_category)` → `LedgerService.createCategory` → `BudgetService.
+  setCap` per category; `assertAllowed(enable_reminder)` → `ReminderSelectionPort.
+  enableReminder` per selection. Progress is tracked per item (`categoryId`,
+  `capCommitted`, `reminderCommitted`); a mid-hand-off failure throws
+  `OnboardingHandoffError` carrying the partial state so a retry skips what M3/M4/M5
+  already have. `begin` for a user whose `timezone` and `periodAnchorDate` are set
+  returns `{ step: 'summary', settings }` — never a new account, never step 1 again;
+  a stale saved state is reconciled forward so step 1 is never re-asked.
+- **Tests** — 55 new unit tests under `test/unit/identity/` (concurrent duplicate
+  `register` with interleaved callers; every timezone mutation path incl. same-value
+  explicit patch, forged step-1 callback, second `/start`; currency 0 vs 1
+  transaction; cascade delete in the in-memory repo; full 5-step walk on both tiers;
+  partial hand-off retry). `test/integration/identity.test.ts` (5 cases, skipped
+  without `DATABASE_URL`) proves the unique constraint, the set-once claim, the
+  `status` check constraint and cascade delete on a real Neon branch — not run
+  locally. `npm run typecheck` + `npm test` green (64 passed, 5 skipped).
+
+### Assumed
+
+- **`timezone` stays `not null` (per the doc's SQL) with `''` as the "not yet set"
+  sentinel.** `register` has to create `app_user` before step 1 collects a timezone,
+  and the alternative (nullable column) deviates from the spec'd SQL. `getSettings`
+  returns `timezone: ''` until step 1 completes; `hasCompletedCoreOnboarding(settings)`
+  is the helper M7 should gate `ONBOARDING_REQUIRED` on. Making it nullable later is a
+  one-column migration if preferred.
+- **"Idempotent replay of the same value"** is read as: a replayed
+  `setInitialTimezone(sameZone)` is a silent no-op; a `timezone` key in an
+  `updateSettings` patch is refused even when it carries the stored value (the doc's
+  test bullet and the task brief both say so). Both cases are tested.
+- **Currency check uses `LedgerService.history(userId, { limit: 1 })`** rather than a
+  new port method — it fits without touching M3's contract. Caveat: `history`
+  presumably filters `status = 'confirmed'`, so a user whose only transaction is
+  soft-deleted can still change currency. Their deleted row keeps its own
+  `currency_code` (M3 copies it per row), so nothing renders wrong; flagging anyway.
+- **Draft-then-hand-off for step 4**, not create-as-you-go: neither M3's nor M4's port
+  has rename/archive/deactivate methods usable mid-onboarding, and creating on confirm
+  keeps "accept, edit, or delete Food" a pure in-memory edit. Consequence: M8's
+  `assertAllowed` can't bound the *draft* (it would count zero rows), so
+  `ONBOARDING_TIER_LIMITS` duplicates M8's agreed 10/30 and 1/5 table for the draft
+  UX only; `assertAllowed` still runs before every hand-off call and stays
+  authoritative.
+- **Conversation state is the gateway's to persist.** M2 owns no table for it;
+  `OnboardingState` is small, JSON-encodable, and re-derivable enough (steps 1–3 are
+  reconciled from `app_user` on `begin`) that a lost state costs at most the
+  un-confirmed step-4/5 draft.
+- **`register` refreshes the connection** (`chat_id`, `username`, `is_active = true`)
+  on a returning user. Not in the doc; it's what makes a user who blocked and then
+  un-blocked the bot receive reminders again without a support path.
+- **Category name rules** for the draft: trimmed, internal whitespace collapsed,
+  ≤ 40 chars, unique case-insensitively within the draft. M3's `normalized_name` is
+  the real uniqueness rule; if M3 normalises differently, M3's constraint wins at
+  hand-off and surfaces as an `OnboardingHandoffError`.
+- **`localDateAt(instant, timezone)`** lives in `src/core/identity/validation.ts` —
+  it's "what calendar day is it for this user", not period maths (which stays in
+  M4's `periodFor`). M3 needs the same thing for `occurred_on`; feel free to lift it
+  into `core/domain`.
+- `deleteAccount` is idempotent (no-op when the user is already gone) so a redelivered
+  `/delete` confirmation never surfaces an error for a mutation that already committed.
+
+### Open questions
+
+1. **`LedgerService.createCategory(userId, name): Promise<Category>` added to M3's
+   contract** (plus a `Category` DTO from M3's SQL). The M1 stub had no
+   category-creation method — `record` only creates one as a side effect of a
+   transaction — and onboarding step 4 needs the id back. M3 owns the body
+   (normalise, enforce `unique (user_id, normalized_name)`, atomic capacity check).
+   Confirm the name/shape with whoever builds M3.
+2. **`ReminderSelectionPort.enableReminder(userId, categoryId)`** is an M2-defined seam
+   in `onboarding.ts`, not a method on any existing port. No module's port exposes
+   "enable the daily reminder for this category" and where the flag lives (a
+   `category` column? a `budget` column? M5's own table?) isn't specified anywhere.
+   The integrator adapts it to whichever module lands it — or M5 adds the method to
+   `DailyAllowanceService` and this seam goes away.
+3. **`CURRENCY_LOCKED` added to `RefusalCode`.** M11's table had no code for "currency
+   change refused because you have transactions"; `INVALID_ARGUMENT` would be a lie.
+   M11's lead may rename it.
+4. **Cascade-delete coverage is only `channel_connection` for now** — no other module's
+   table exists yet. The integration test has a comment marking where to seed one row
+   per module and assert it's gone (and that `parse_event.user_id` is nulled).
+5. **`Intl.supportedValuesOf('timeZone')` on Workers** — the IANA search relies on it
+   (418 zones under Node locally). V8 ships it and `compatibility_date` is recent,
+   but it hasn't been exercised in a deployed Worker; `allTimezones()` falls back to
+   the curated list if the API is absent, so the failure mode is "search is AU-only",
+   not a crash. Worth a one-line check on first deploy.
+6. **Onboarding step count** — built as 5 per the doc; the doc's own note about
+   Ricky's "confirm 6 steps" message still stands. Adding a choiceless "your budget
+   renews monthly from <date>" confirmation would be one more `OnboardingStep` between
+   `anchor_date` and `categories`.

@@ -63,4 +63,10 @@ export type RefusalCode =
   | 'BILLING_UNAVAILABLE'
   | 'DELIVERY_FAILED'
   | 'TIMEZONE_IMMUTABLE'
+  /**
+   * Added by M2 (Phase 1): a currency change refused because the user already has a
+   * transaction (M2 checklist step 5 — no conversion in v1). Not in M11's original table;
+   * M11's lead may rename it. See build-log.
+   */
+  | 'CURRENCY_LOCKED'
   | 'NOT_YET_AVAILABLE';
