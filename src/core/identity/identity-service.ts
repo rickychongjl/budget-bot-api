@@ -1,244 +1,80 @@
-import { RefusalError } from '../domain/refusal';
-import { canonicalTimezone, isLocalDate, isLocalTime } from '../domain/timezone';
-import type { ChannelConnectionDirectory } from '../ports/channel-connection-directory';
-import type { Clock } from '../ports/clock';
-import type { Channel, CurrencyCode, UserId } from '../ports/common';
-import type { AccountExport, IdentityService, ResolvedUser, UserSettings } from '../ports/identity-service';
-import type { LedgerService } from '../ports/ledger-service';
-import type { ChannelConnection } from '../ports/messaging';
-import type { AppUserRecord, IdentityRepository, OnboardingStep } from './repository';
+import type { Channel, CurrencyCode, LocalDate, LocalTime, UserId } from '../ports/common';
 
-/** The only keys accepted by `updateSettings`; timezone has its own set-once path. */
-const MUTABLE_SETTING_KEYS = new Set(['currencyCode', 'periodAnchorDate', 'reminderLocalTime']);
+/**
+ * M2 — Identity & Accounts. Owns who a user *is*, independent of how they reach the
+ * bot. Every other module takes a `UserId` and never sees a Telegram identifier.
+ *
+ * This is M2's incoming port — the contract other modules import (via
+ * `core/identity`). `DefaultIdentityService` implements it. Interface lifted verbatim
+ * from `docs/M2-identity-accounts.md` ("Public interface").
+ */
 
-export interface IdentityServiceDeps {
-  repo: IdentityRepository;
-  clock: Clock;
-  /** M3 is injected narrowly: M2 only needs to ask whether history contains one row. */
-  ledger: Pick<LedgerService, 'history'>;
+export interface ResolvedUser {
+  userId: UserId;
+  /** True when `register` created the row rather than finding an existing one. */
+  isNew: boolean;
+  /**
+   * True once all 5 onboarding steps are complete. M7 uses this to route free text to
+   * the onboarding machine instead of M6 (`ONBOARDING_REQUIRED` for everything else)
+   * without a second round-trip. Added by M2 alongside M1's `isNew`.
+   */
+  onboarded: boolean;
 }
 
 /**
- * The step marker the `/start` machine reads and advances. Implemented by
- * `IdentityServiceImpl` and consumed by `OnboardingService`; not a cross-module port.
+ * The settings contract the rest of the system depends on. `timezone` is present for
+ * reads but is immutable after onboarding (M2 enforces this in the write path, not
+ * just the UI) — hence `Omit<..., 'timezone'>` on the patch.
  */
-export interface OnboardingStateStore {
-  onboardingStep(userId: UserId): Promise<OnboardingStep>;
-  setOnboardingStep(userId: UserId, step: OnboardingStep): Promise<void>;
-  /** The raw row — the onboarding machine needs `timezone` before `getSettings` is legal. */
-  userRecord(userId: UserId): Promise<AppUserRecord>;
+export interface UserSettings {
+  timezone: string;
+  currencyCode: CurrencyCode;
+  /** The "budget start date" collected at onboarding step 3; null until then. */
+  periodAnchorDate: LocalDate | null;
+  /** Fixed 07:00 for every user this pass (5 Sep decision); still stored per-user. */
+  reminderLocalTime: LocalTime;
 }
 
 /**
- * `IdentityService` (M2) over an `IdentityRepository`.
- *
- * What this class owns, and where each invariant actually lives:
- *   - one user per `(channel, external_id)` ........ the repository's unique constraint
- *   - timezone written once, never changed ......... `setTimezoneIfUnset` (conditional
- *     update) + a runtime guard here so an `updateSettings` patch carrying `timezone`
- *     is refused even when the value is identical (M2 checklist step 4)
- *   - currency frozen after the first transaction ... asks M3 via `LedgerService.history`
- *   - anchor-date change is a pure re-bucket ........ nothing here touches the ledger
- *   - `reminder_local_time` affects the next send ... a plain column write; M5 reads it
- *
- * `exportAccount` is deferred (master plan §5.8) and throws `NOT_YET_AVAILABLE`.
+ * What `updateSettings` accepts. `timezone` is deliberately absent — it has its own
+ * set-once path (`setInitialTimezone`), so a change can't even be expressed here.
+ * Same shape M2's plan writes as `Partial<Omit<UserSettings, 'timezone'>>`.
  */
-export class IdentityServiceImpl implements IdentityService, ChannelConnectionDirectory, OnboardingStateStore {
-  private readonly repo: IdentityRepository;
-  private readonly clock: Clock;
-  private readonly ledger: Pick<LedgerService, 'history'>;
+export type UserSettingsPatch = Partial<Omit<UserSettings, 'timezone'>>;
 
-  constructor(deps: IdentityServiceDeps) {
-    this.repo = deps.repo;
-    this.clock = deps.clock;
-    this.ledger = deps.ledger;
-  }
+/**
+ * Full account export. `/export` is deferred (round 5, Story 7) — the method stays on
+ * the interface so the contract compiles; the CSV assembly is not built this pass.
+ */
+export interface AccountExport {
+  user: unknown;
+  transactions: readonly unknown[];
+}
 
-  // ---- resolution ----------------------------------------------------------------
+export interface IdentityService {
+  resolve(channel: Channel, externalId: string): Promise<ResolvedUser | null>;
 
-  async resolve(channel: Channel, externalId: string): Promise<ResolvedUser | null> {
-    const found = await this.repo.findConnection(channel, externalId);
-    if (!found) return null;
-    return { userId: found.userId, isNew: false, onboarded: found.onboardingStep === 'done' };
-  }
-
-  async register(
+  /** Idempotent — re-running `/start` must not create a second user. */
+  register(
     channel: Channel,
     externalId: string,
     chatId: string,
     username?: string,
-  ): Promise<ResolvedUser> {
-    if (externalId.trim() === '' || chatId.trim() === '') {
-      throw new RefusalError('INVALID_ARGUMENT', 'externalId and chatId are required');
-    }
-    const out = await this.repo.register(channel, externalId, chatId, username ?? null, this.clock.now());
-    return { userId: out.userId, isNew: out.isNew, onboarded: out.onboardingStep === 'done' };
-  }
+  ): Promise<ResolvedUser>;
 
-  // ---- settings ------------------------------------------------------------------
+  getSettings(userId: UserId): Promise<UserSettings>;
 
-  async getSettings(userId: UserId): Promise<UserSettings> {
-    const user = await this.userRecord(userId);
-    if (user.timezone === '') {
-      throw new RefusalError('ONBOARDING_REQUIRED', 'Finish /start first — a timezone has not been chosen yet.');
-    }
-    return toSettings(user, user.timezone);
-  }
+  /** Succeeds once; every later attempt is rejected `TIMEZONE_IMMUTABLE`. */
+  setInitialTimezone(userId: UserId, timezone: string): Promise<void>;
 
-  async setInitialTimezone(userId: UserId, timezone: string): Promise<void> {
-    const canonical = canonicalTimezone(timezone);
-    if (!canonical) {
-      throw new RefusalError('INVALID_ARGUMENT', `"${timezone}" is not a timezone I recognise.`);
-    }
-    const outcome = await this.repo.setTimezoneIfUnset(userId, canonical, this.clock.now());
-    if (outcome === 'set') return;
-    if (outcome === 'missing') throw new RefusalError('RESOURCE_NOT_FOUND', 'No such user.');
-    // Already set — an identical replay (Telegram redelivery, a re-run /start) is not a
-    // change and succeeds; anything else is the immutable-timezone rule.
-    const user = await this.userRecord(userId);
-    if (user.timezone === canonical) return;
-    throw timezoneImmutable(user.timezone);
-  }
+  updateSettings(
+    userId: UserId,
+    patch: UserSettingsPatch,
+  ): Promise<UserSettings>;
 
-  async updateSettings(userId: UserId, patch: Partial<Omit<UserSettings, 'timezone'>>): Promise<UserSettings> {
-    // The type already excludes `timezone`; this catches a forged/JS caller that sends
-    // it anyway — refused even if the value equals what is stored (M2 tests).
-    const raw = patch as Record<string, unknown>;
-    if ('timezone' in raw) {
-      const user = await this.userRecord(userId);
-      throw timezoneImmutable(user.timezone);
-    }
-    for (const key of Object.keys(raw)) {
-      if (!MUTABLE_SETTING_KEYS.has(key)) {
-        throw new RefusalError('INVALID_ARGUMENT', `Unknown setting ${JSON.stringify(key)}.`);
-      }
-    }
+  /** Deferred this pass — signature kept so the contract compiles. */
+  exportAccount(userId: UserId): Promise<AccountExport>;
 
-    const user = await this.userRecord(userId);
-    if (user.timezone === '') {
-      throw new RefusalError('ONBOARDING_REQUIRED', 'Choose a timezone (step 1 of /start) before changing other settings.');
-    }
-
-    const next: Parameters<IdentityRepository['updateUser']>[1] = {};
-
-    if (patch.currencyCode !== undefined) {
-      const code = normaliseCurrency(patch.currencyCode);
-      if (code !== user.currencyCode) {
-        if (await this.hasAnyTransaction(userId)) {
-          throw new RefusalError(
-            'INVALID_ARGUMENT',
-            `Your currency is fixed at ${user.currencyCode} because you've already logged transactions in it — ` +
-              `there's no currency conversion yet. To budget in ${code}, delete this account and start again.`,
-          );
-        }
-        next.currencyCode = code;
-      }
-    }
-
-    if (patch.periodAnchorDate !== undefined) {
-      if (patch.periodAnchorDate === null) {
-        throw new RefusalError('INVALID_ARGUMENT', 'A budget start date is required once set.');
-      }
-      if (!isLocalDate(patch.periodAnchorDate)) {
-        throw new RefusalError('INVALID_ARGUMENT', 'Send the budget start date as YYYY-MM-DD.');
-      }
-      // Periods are derived, not stored (M4) — writing the anchor re-buckets history by
-      // itself. Deliberately no ledger/budget call here.
-      if (patch.periodAnchorDate !== user.periodAnchorDate) next.periodAnchorDate = patch.periodAnchorDate;
-    }
-
-    if (patch.reminderLocalTime !== undefined) {
-      if (!isLocalTime(patch.reminderLocalTime)) {
-        throw new RefusalError('INVALID_ARGUMENT', 'Send the reminder time as HH:MM (24-hour).');
-      }
-      // Takes effect at the next scheduled send; never backfills a missed day (M5 reads
-      // this column when it selects due users).
-      if (patch.reminderLocalTime !== user.reminderLocalTime) next.reminderLocalTime = patch.reminderLocalTime;
-    }
-
-    if (Object.keys(next).length === 0) return toSettings(user, user.timezone);
-    const updated = await this.repo.updateUser(userId, next, this.clock.now());
-    if (!updated) throw new RefusalError('RESOURCE_NOT_FOUND', 'No such user.');
-    return toSettings(updated, updated.timezone);
-  }
-
-  // ---- export / delete -----------------------------------------------------------
-
-  async exportAccount(_userId: UserId): Promise<AccountExport> {
-    // Deferred — round 5, Story 7 (master plan §5.8). M3's `exportCsv` isn't built either.
-    throw new RefusalError('NOT_YET_AVAILABLE', 'Account export is not available yet.');
-  }
-
-  async deleteAccount(userId: UserId): Promise<void> {
-    // Hard delete. `on delete cascade` from app_user removes every user-owned row;
-    // `parse_event.user_id` is nulled by M9's FK. No soft-delete grace period in v1.
-    await this.repo.deleteUser(userId);
-  }
-
-  // ---- ChannelConnectionDirectory (M7 / M5) ---------------------------------------
-
-  activeConnection(userId: UserId, channel: Channel): Promise<ChannelConnection | null> {
-    return this.repo.activeConnection(userId, channel);
-  }
-
-  deactivateConnection(userId: UserId, channel: Channel): Promise<void> {
-    return this.repo.deactivateConnection(userId, channel);
-  }
-
-  // ---- OnboardingStateStore (internal) -------------------------------------------
-
-  async onboardingStep(userId: UserId): Promise<OnboardingStep> {
-    return (await this.userRecord(userId)).onboardingStep;
-  }
-
-  async setOnboardingStep(userId: UserId, step: OnboardingStep): Promise<void> {
-    const updated = await this.repo.updateUser(userId, { onboardingStep: step }, this.clock.now());
-    if (!updated) throw new RefusalError('RESOURCE_NOT_FOUND', 'No such user.');
-  }
-
-  async userRecord(userId: UserId): Promise<AppUserRecord> {
-    const user = await this.repo.findUser(userId);
-    if (!user) throw new RefusalError('RESOURCE_NOT_FOUND', 'No such user.');
-    return user;
-  }
-
-  // ---- helpers -------------------------------------------------------------------
-
-  private async hasAnyTransaction(userId: UserId): Promise<boolean> {
-    const page = await this.ledger.history(userId, { limit: 1 });
-    return page.items.length > 0;
-  }
-}
-
-function toSettings(user: AppUserRecord, timezone: string): UserSettings {
-  return {
-    timezone,
-    currencyCode: user.currencyCode,
-    periodAnchorDate: user.periodAnchorDate,
-    reminderLocalTime: user.reminderLocalTime,
-  };
-}
-
-function timezoneImmutable(current: string): RefusalError {
-  return new RefusalError(
-    'TIMEZONE_IMMUTABLE',
-    current
-      ? `Your timezone is fixed at ${current} and can't be changed.`
-      : 'Your timezone can only be set once.',
-  );
-}
-
-let cachedCurrencies: ReadonlySet<string> | undefined;
-
-/** ISO 4217 alpha-3 as the runtime knows it (`Intl.supportedValuesOf('currency')`). */
-export function normaliseCurrency(input: CurrencyCode): CurrencyCode {
-  const code = input.trim().toUpperCase();
-  if (!/^[A-Z]{3}$/.test(code)) {
-    throw new RefusalError('INVALID_ARGUMENT', 'Send a 3-letter currency code, e.g. AUD.');
-  }
-  cachedCurrencies ??= new Set(Intl.supportedValuesOf('currency'));
-  if (!cachedCurrencies.has(code)) {
-    throw new RefusalError('INVALID_ARGUMENT', `"${code}" isn't a currency I recognise.`);
-  }
-  return code;
+  /** Hard delete. Relies on `on delete cascade`; `parse_event.user_id` is nulled. */
+  deleteAccount(userId: UserId): Promise<void>;
 }

@@ -1,9 +1,13 @@
 import type { Instant, LocalDate, LocalTime } from '../ports/common';
 
 /**
- * Pure timezone helpers (M2 onboarding step 1, and the "local date derived at write
- * time" rule every module follows — master plan §6). No `Date.now()`, no DB; callers
- * pass an `Instant` from an injected `Clock`.
+ * Pure timezone helpers owned by M2 (onboarding step 1, and the "local date derived at
+ * write time" rule every module follows — master plan §6). No `Date.now()`, no DB;
+ * callers pass an `Instant` from an injected `Clock`.
+ *
+ * Other modules should import these through the `core/identity` barrel. If M3/M4/M5
+ * end up needing `localDateAt` more than M2 does, it is a candidate for
+ * `core/shared` — see the M2 refactor note in `docs/build-log.md`.
  *
  * Backed by the runtime's IANA database via `Intl` — available in both Workers (V8)
  * and Node ≥ 18 without a dependency.

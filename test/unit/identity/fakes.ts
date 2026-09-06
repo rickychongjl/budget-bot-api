@@ -1,4 +1,4 @@
-import { RefusalError } from '../../../src/core/domain/refusal';
+import { RefusalError } from '../../../src/core/identity';
 import type {
   Budget,
   BudgetPeriod,

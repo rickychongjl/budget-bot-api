@@ -2,8 +2,8 @@ import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/db/client';
 import type { Database } from '../../src/db/client';
-import { IdentityServiceImpl } from '../../src/core/identity/identity-service';
-import { DrizzleIdentityRepository } from '../../src/core/identity/drizzle-repository';
+import { DefaultIdentityService } from '../../src/core/identity';
+import { DrizzleIdentityRepository } from '../../src/infrastructure/database/repositories/drizzle-identity-repository';
 import { TestClock } from '../../src/core/testing/test-clock';
 import { FakeLedger } from '../unit/identity/fakes';
 
@@ -26,7 +26,7 @@ const run = url ? describe : describe.skip;
 
 run('M2 identity (real Postgres)', () => {
   let db: Database;
-  let identity: IdentityServiceImpl;
+  let identity: DefaultIdentityService;
   const createdExternalIds: string[] = [];
   const stamp = Date.now().toString(36);
   const ext = (label: string) => {
@@ -37,7 +37,7 @@ run('M2 identity (real Postgres)', () => {
 
   beforeAll(() => {
     db = createDatabase(url as string);
-    identity = new IdentityServiceImpl({
+    identity = new DefaultIdentityService({
       repo: new DrizzleIdentityRepository(db),
       clock: new TestClock('2026-09-06T00:00:00Z'),
       ledger: new FakeLedger(),

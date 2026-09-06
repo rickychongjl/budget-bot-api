@@ -298,3 +298,123 @@ question it hit. Read between PR reviews (master plan §7). Newest last.
    not expose a way to set it; M5 should still read the column rather than hard-code.
 7. **Whether a currency change should be refused for a user with only soft-deleted
    transactions** — see Assumed; depends on M3's `history` semantics.
+
+---
+
+## M2 — CLAUDE.md conventions refactor — 2026-09-06
+
+**Branch:** `m2-identity-accounts` (via `pr2-m2-identity-work`) · **Phase:** 1 ·
+**Scope:** structural only — no product behaviour changed, no schema changed, no
+migration regenerated. The same 70 unit tests pass before and after.
+
+`CLAUDE.md` landed on `phase-1` after the M2 PR was opened, and its worked examples in
+"Ports and interfaces", "Public module exports", "Repository interfaces" and "Drizzle
+repository implementations" describe this module by name. This entry records the moves
+and renames, so the M2 entry above reads as history — the paths and symbols below are
+current.
+
+### Moved
+
+| Was | Now | Why (CLAUDE.md) |
+|---|---|---|
+| `src/core/identity/drizzle-repository.ts` | `src/infrastructure/database/repositories/drizzle-identity-repository.ts` | Core must not import Drizzle or the DB client; "Drizzle repository implementations" names this exact path. |
+| `src/core/identity/repository.ts` | `src/core/identity/identity-repository.ts` | Named in the file-naming convention list and the target tree. |
+| `src/core/identity/identity-service.ts` (impl) | `src/core/identity/default-identity-service.ts` | Target tree: `identity-service.ts` holds the contract, `default-identity-service.ts` the implementation. |
+| `src/core/ports/identity-service.ts` | `src/core/identity/identity-service.ts` | "Do not use a global `core/ports` folder as a dumping ground" — module-owned contracts live in the owning feature folder. |
+| `src/core/ports/channel-connection-directory.ts` | `src/core/identity/channel-connection-directory.ts` | Same; its own header already said "M2-owned". |
+| `src/core/domain/timezone.ts` | `src/core/identity/timezones.ts` | "Do not use `core/domain` as a general dumping ground"; the target tree names `core/identity/timezones.ts`. |
+| `src/core/domain/refusal.ts` | `src/core/identity/errors.ts` | Same; the target tree names `core/identity/errors.ts`. |
+| `src/core/testing/in-memory-identity-repository.ts` | `test/support/in-memory-identity-repository.ts` | "Put reusable test-only code under `test/support/`" — a test double does not belong in production `src/`. |
+| `test/unit/domain/timezone.test.ts` | `test/unit/identity/timezones.test.ts` | Follows its subject. |
+| `test/unit/identity/identity-service.test.ts` | `test/unit/identity/default-identity-service.test.ts` | Follows its subject. |
+
+`src/core/domain/index.ts` and `src/core/ports/index.ts` dropped only the
+corresponding re-export lines. `money`/`period`/`allowance` and the M3/M5-proposed
+ports were left alone — not this module's to move.
+
+### Renamed
+
+- `IdentityServiceImpl` → **`DefaultIdentityService`** (CLAUDE.md's own "Public module
+  exports" example), and `IdentityServiceDeps` → `DefaultIdentityServiceDeps`.
+- Repository port, to CLAUDE.md's "Repository interfaces" and "Methods and functions"
+  examples — business terminology, verb-first, `find…` where absence is expected:
+  - `register(channel, externalId, chatId, username, now)` →
+    `registerConnection(input: RegisterConnectionInput)`
+  - `setTimezoneIfUnset` → `claimInitialTimezone` (named verbatim in the doc, twice)
+  - `activeConnection` → `findActiveConnection` (also on `ChannelConnectionDirectory`)
+  - `AppUserRecord` → `UserRecord`, `AppUserPatch` → `UserRecordPatch`,
+    `ConnectionLookup` → `ConnectionRecord`, `RegisterOutcome` →
+    `RegisterConnectionResult`, `SetTimezoneOutcome` → `ClaimTimezoneOutcome`
+- `OnboardingStateStore.onboardingStep` → `getOnboardingStep`; `.userRecord` →
+  `requireUserRecord` ("`require…` when absence is exceptional" — it throws).
+- Added `UserSettingsPatch = Partial<Omit<UserSettings, 'timezone'>>` — the name
+  CLAUDE.md's incoming-port example uses — and used it on `updateSettings`.
+
+**`IdentityService`'s own method names are untouched.** `resolve`, `register`,
+`getSettings`, `setInitialTimezone`, `updateSettings`, `exportAccount` and
+`deleteAccount` are the agreed contract from `docs/M2-identity-accounts.md`, and
+CLAUDE.md's "do not silently change an established public contract" rule applies.
+
+### `core/identity/index.ts`
+
+Now a pure barrel over the module's public surface: `IdentityService` and its types,
+`ChannelConnectionDirectory`, `IdentityRepository` and its types, `OnboardingStep`,
+`DefaultIdentityService`, `OnboardingService` and its types, `RefusalError`, and the
+timezone helpers. It deliberately does **not** re-export `DrizzleIdentityRepository` —
+that would make `core` depend on `infrastructure`, which CLAUDE.md's dependency
+direction forbids. The composition root imports it from
+`infrastructure/database/repositories/drizzle-identity-repository` directly, exactly as
+CLAUDE.md's "Database connection" wiring example shows.
+
+### Deliberately not done — out of this PR's scope
+
+1. **`src/db/` was not moved to `src/infrastructure/database/`.** CLAUDE.md's target
+   tree puts `client.ts`, `schema/` and `migrations/` there, but that is a repo-wide
+   move touching every module's schema file and the committed migration journal, and
+   `drizzle.config.ts` plus CI reference the current paths. It needs its own PR.
+2. **`src/core/ports/common.ts` and `clock.ts` were left in place.** CLAUDE.md wants
+   them at `core/shared/common.ts` and `core/shared/clock.ts`; every module imports
+   them, so that is also repo-wide.
+3. **`src/core/testing/test-clock.ts` was left in place.** Same violation class as the
+   in-memory repository (a test double in production `src/`), and CLAUDE.md names
+   `test/support/test-clock.ts` — but `TestClock` is M1's, shared by every module's
+   tests. Moving it belongs with item 2.
+4. **`test/unit/identity/fakes.ts` was left in place.** It fakes *other* modules' ports
+   (M3/M4/M5/M8). CLAUDE.md's `test/support/` tree names `fake-ledger-service.ts` and
+   `in-memory-entitlement-repository.ts`; those are the owning modules' to author, and
+   creating them speculatively from M2's PR would collide with their branches.
+
+### Architectural conflicts flagged, not resolved
+
+1. **`CategoryService` (M3-owned) and `ReminderSelectionService` (M5-owned) stay in
+   `core/ports/`.** CLAUDE.md forbids a global ports folder, so they should end up in
+   `core/ledger/` and `core/allowance/` — but both of those folders are still bare
+   `export {}` stubs giving no signal about where their contracts will live, and M3/M5
+   are explicitly free to rename, widen, or fold these into `LedgerService` /
+   `DailyAllowanceService` (M2's open question 2, above). Dropping a live contract into
+   another module's stub folder now would collide with whatever their PRs do. **M3 and
+   M5 should relocate these into their own feature folders as part of their PRs**;
+   M2's onboarding is the only caller to update.
+2. **`RefusalError` now lives in `core/identity/errors.ts`** because CLAUDE.md's target
+   tree names that file for M2 — but its own contract is deliberately cross-module
+   ("M3/M8 are welcome to throw the same class so M7 has exactly one thing to catch").
+   The moment a second module throws it, it belongs in `core/shared/errors.ts`, not
+   inside M2. The same argument applies to `localDateAt` / `localTimeAt` in
+   `core/identity/timezones.ts`, which M3/M4/M5/M8 are all expected to use for the
+   "local date derived at write time" rule. Lead's call — flagged rather than
+   pre-empted, since moving them now would create a `core/shared` nothing else has
+   agreed to yet.
+3. **`docs/M2-identity-accounts.md` and the M2 entry above still name the old paths and
+   `IdentityServiceImpl`.** The product behaviour they describe is unchanged and
+   correct; only file and symbol names moved. Left as historical record rather than
+   rewriting an agreed plan doc.
+
+### Verification
+
+- `npm run typecheck` — passes.
+- `npm test` — 70 passed, 6 skipped; identical to before the refactor.
+- `npm run test:integration` — **not executed.** It needs a real `DATABASE_URL`
+  (Postgres/Neon) and is not PGlite-backed, so it is unavailable in this environment.
+  The suite `describe.skip`s cleanly without it; its imports were updated and are
+  covered by `tsc`.
+- `npm run db:generate` — **not run, deliberately**: no schema shape changed.

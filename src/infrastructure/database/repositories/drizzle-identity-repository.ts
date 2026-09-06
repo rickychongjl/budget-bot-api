@@ -1,37 +1,39 @@
 import { and, eq } from 'drizzle-orm';
 import { TransactionRollbackError } from 'drizzle-orm/errors';
-import type { Database } from '../../db/client';
-import { appUser, channelConnection } from '../../db/schema/identity';
-import type { Channel, Instant, UserId } from '../ports/common';
-import type { ChannelConnection } from '../ports/messaging';
+import type { OnboardingStep } from '../../../core/identity/onboarding-step';
 import type {
-  AppUserPatch,
-  AppUserRecord,
-  ConnectionLookup,
+  UserRecordPatch,
+  UserRecord,
+  ConnectionRecord,
   IdentityRepository,
-  OnboardingStep,
-  RegisterOutcome,
-  SetTimezoneOutcome,
+  RegisterConnectionInput,
+  RegisterConnectionResult,
+  ClaimTimezoneOutcome,
   UserStatus,
-} from './repository';
+} from '../../../core/identity/identity-repository';
+import type { Channel, Instant, UserId } from '../../../core/ports/common';
+import type { ChannelConnection } from '../../../core/ports/messaging';
+import type { Database } from '../../../db/client';
+import { appUser, channelConnection } from '../../../db/schema/identity';
 
 /**
  * `IdentityRepository` over Drizzle/Postgres — the only M2 code that touches a DB
- * handle. Every invariant the module promises is a *constraint or conditional
- * update here*, never a read-then-write in the service:
+ * handle, and the reason it lives in `infrastructure/` rather than `core/`. Every
+ * invariant the module promises is a *constraint or conditional update here*, never a
+ * read-then-write in the service:
  *
- *   - `register`: `insert app_user` + `insert channel_connection … on conflict
+ *   - `registerConnection`: `insert app_user` + `insert channel_connection … on conflict
  *     (channel, external_id) do nothing`, in one transaction. Zero rows from the
  *     second insert means somebody else won — roll back (so the speculative
  *     `app_user` never survives) and read the winner. Two concurrent first-`/start`s
  *     serialise on the unique index.
- *   - `setTimezoneIfUnset`: `update … where timezone = ''` — at most one caller
+ *   - `claimInitialTimezone`: `update … where timezone = ''` — at most one caller
  *     ever sees a row updated.
  */
 export class DrizzleIdentityRepository implements IdentityRepository {
   constructor(private readonly db: Database) {}
 
-  async findConnection(channel: Channel, externalId: string): Promise<ConnectionLookup | null> {
+  async findConnection(channel: Channel, externalId: string): Promise<ConnectionRecord | null> {
     const rows = await this.db
       .select({ userId: channelConnection.userId, onboardingStep: appUser.onboardingStep })
       .from(channelConnection)
@@ -42,15 +44,10 @@ export class DrizzleIdentityRepository implements IdentityRepository {
     return row ? { userId: row.userId, onboardingStep: asStep(row.onboardingStep) } : null;
   }
 
-  async register(
-    channel: Channel,
-    externalId: string,
-    chatId: string,
-    username: string | null,
-    now: Instant,
-  ): Promise<RegisterOutcome> {
+  async registerConnection(input: RegisterConnectionInput): Promise<RegisterConnectionResult> {
+    const { channel, externalId, chatId, username, now } = input;
     const created = await this.db
-      .transaction(async (tx): Promise<RegisterOutcome> => {
+      .transaction(async (tx): Promise<RegisterConnectionResult> => {
         const [user] = await tx
           .insert(appUser)
           .values({
@@ -86,20 +83,20 @@ export class DrizzleIdentityRepository implements IdentityRepository {
       .returning({ userId: channelConnection.userId });
     if (!refreshed) {
       // Deleted between our conflict and this update — vanishingly rare; try once more.
-      return this.register(channel, externalId, chatId, username, now);
+      return this.registerConnection(input);
     }
     const user = await this.findUser(refreshed.userId);
     if (!user) throw new Error(`channel_connection without app_user: ${refreshed.userId}`);
     return { userId: user.id, isNew: false, onboardingStep: user.onboardingStep };
   }
 
-  async findUser(userId: UserId): Promise<AppUserRecord | null> {
+  async findUser(userId: UserId): Promise<UserRecord | null> {
     const rows = await this.db.select().from(appUser).where(eq(appUser.id, userId)).limit(1);
     const row = rows[0];
     return row ? toRecord(row) : null;
   }
 
-  async setTimezoneIfUnset(userId: UserId, timezone: string, now: Instant): Promise<SetTimezoneOutcome> {
+  async claimInitialTimezone(userId: UserId, timezone: string, now: Instant): Promise<ClaimTimezoneOutcome> {
     const updated = await this.db
       .update(appUser)
       .set({ timezone, updatedAt: new Date(now) })
@@ -110,7 +107,7 @@ export class DrizzleIdentityRepository implements IdentityRepository {
     return exists.length === 1 ? 'already_set' : 'missing';
   }
 
-  async updateUser(userId: UserId, patch: AppUserPatch, now: Instant): Promise<AppUserRecord | null> {
+  async updateUser(userId: UserId, patch: UserRecordPatch, now: Instant): Promise<UserRecord | null> {
     const set: Partial<typeof appUser.$inferInsert> = { updatedAt: new Date(now) };
     if (patch.currencyCode !== undefined) set.currencyCode = patch.currencyCode;
     if (patch.periodAnchorDate !== undefined) set.periodAnchorDate = patch.periodAnchorDate;
@@ -125,7 +122,7 @@ export class DrizzleIdentityRepository implements IdentityRepository {
     await this.db.delete(appUser).where(eq(appUser.id, userId));
   }
 
-  async activeConnection(userId: UserId, channel: Channel): Promise<ChannelConnection | null> {
+  async findActiveConnection(userId: UserId, channel: Channel): Promise<ChannelConnection | null> {
     const rows = await this.db
       .select()
       .from(channelConnection)
@@ -159,7 +156,7 @@ export class DrizzleIdentityRepository implements IdentityRepository {
   }
 }
 
-function toRecord(row: typeof appUser.$inferSelect): AppUserRecord {
+function toRecord(row: typeof appUser.$inferSelect): UserRecord {
   return {
     id: row.id,
     timezone: row.timezone,

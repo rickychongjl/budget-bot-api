@@ -1,21 +1,21 @@
 import { formatMinorUnits, toMinorUnits } from '../domain/money';
-import { RefusalError } from '../domain/refusal';
+import type { BudgetService } from '../ports/budget-service';
+import type { Category, CategoryService } from '../ports/category-service';
+import type { Clock } from '../ports/clock';
+import type { CurrencyCode, Id, MinorUnits, RefusalCode, Tier, UserId } from '../ports/common';
+import type { EntitlementService } from '../ports/entitlement-service';
+import type { ReminderSelectionService } from '../ports/reminder-selection-service';
+import type { OnboardingStateStore } from './default-identity-service';
+import { RefusalError } from './errors';
+import type { IdentityService, UserSettings } from './identity-service';
+import type { OnboardingStep } from './onboarding-step';
 import {
   CURATED_AU_TIMEZONES,
   canonicalTimezone,
   isLocalDate,
   localDateAt,
   searchTimezones,
-} from '../domain/timezone';
-import type { BudgetService } from '../ports/budget-service';
-import type { Category, CategoryService } from '../ports/category-service';
-import type { Clock } from '../ports/clock';
-import type { CurrencyCode, Id, MinorUnits, RefusalCode, Tier, UserId } from '../ports/common';
-import type { EntitlementService } from '../ports/entitlement-service';
-import type { IdentityService, UserSettings } from '../ports/identity-service';
-import type { ReminderSelectionService } from '../ports/reminder-selection-service';
-import type { OnboardingStateStore } from './identity-service';
-import type { OnboardingStep } from './repository';
+} from './timezones';
 
 /**
  * The 5-step `/start` state machine (M2 §Onboarding, resolved at 5 steps — the
@@ -114,7 +114,7 @@ export class OnboardingService {
 
   /** `/start`: resume wherever the user is, or summarise a finished account. */
   async start(userId: UserId): Promise<OnboardingReply> {
-    const step = await this.deps.identity.onboardingStep(userId);
+    const step = await this.deps.identity.getOnboardingStep(userId);
     if (step === 'done') return this.summaryReply(userId, 'summary');
     if (step === 'categories') await this.ensureStarterCategory(userId);
     return { kind: 'prompt', prompt: await this.promptFor(userId, step) };
@@ -122,7 +122,7 @@ export class OnboardingService {
 
   /** Free text or a button press while onboarding (or a stray one afterwards). */
   async answer(userId: UserId, input: OnboardingInput): Promise<OnboardingReply> {
-    const current = await this.deps.identity.onboardingStep(userId);
+    const current = await this.deps.identity.getOnboardingStep(userId);
 
     // A button from a step we're no longer on. Timezone is special: the write path
     // decides (identical replay OK, change refused) — this is the "forged callback"
@@ -349,7 +349,7 @@ export class OnboardingService {
           options: [{ label: 'AUD', value: 'AUD' }],
         };
       case 'anchor_date': {
-        const user = await this.deps.identity.userRecord(userId);
+        const user = await this.deps.identity.requireUserRecord(userId);
         if (user.timezone === '') {
           throw new RefusalError('ONBOARDING_REQUIRED', 'Choose a timezone before setting your budget start date.');
         }
