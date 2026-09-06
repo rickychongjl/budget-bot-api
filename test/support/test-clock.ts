@@ -1,5 +1,5 @@
-import type { Clock } from '../ports/clock';
-import type { Instant } from '../ports/common';
+import type { Clock } from '../../src/core/shared/clock';
+import type { Instant } from '../../src/core/shared/common';
 
 /**
  * Settable `Clock` for unit tests (M1 §3) — this is what lets period/allowance maths

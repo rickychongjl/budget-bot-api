@@ -1,17 +1,24 @@
-import type { Channel, CurrencyCode, LocalDate, LocalTime, UserId } from './common';
+import type { Channel, CurrencyCode, LocalDate, LocalTime, UserId } from '../shared/common';
 
 /**
  * M2 — Identity & Accounts. Owns who a user *is*, independent of how they reach the
  * bot. Every other module takes a `UserId` and never sees a Telegram identifier.
  *
- * Interface lifted verbatim from `docs/M2-identity-accounts.md` ("Public interface").
- * Stub only — the M2 agent fills in the bodies.
+ * This is M2's incoming port — the contract other modules import (via
+ * `core/identity`). `DefaultIdentityService` implements it. Interface lifted verbatim
+ * from `docs/M2-identity-accounts.md` ("Public interface").
  */
 
 export interface ResolvedUser {
   userId: UserId;
   /** True when `register` created the row rather than finding an existing one. */
   isNew: boolean;
+  /**
+   * True once all 5 onboarding steps are complete. M7 uses this to route free text to
+   * the onboarding machine instead of M6 (`ONBOARDING_REQUIRED` for everything else)
+   * without a second round-trip. Added by M2 alongside M1's `isNew`.
+   */
+  onboarded: boolean;
 }
 
 /**
@@ -27,6 +34,13 @@ export interface UserSettings {
   /** Fixed 07:00 for every user this pass (5 Sep decision); still stored per-user. */
   reminderLocalTime: LocalTime;
 }
+
+/**
+ * What `updateSettings` accepts. `timezone` is deliberately absent — it has its own
+ * set-once path (`setInitialTimezone`), so a change can't even be expressed here.
+ * Same shape M2's plan writes as `Partial<Omit<UserSettings, 'timezone'>>`.
+ */
+export type UserSettingsPatch = Partial<Omit<UserSettings, 'timezone'>>;
 
 /**
  * Full account export. `/export` is deferred (round 5, Story 7) — the method stays on
@@ -55,7 +69,7 @@ export interface IdentityService {
 
   updateSettings(
     userId: UserId,
-    patch: Partial<Omit<UserSettings, 'timezone'>>,
+    patch: UserSettingsPatch,
   ): Promise<UserSettings>;
 
   /** Deferred this pass — signature kept so the contract compiles. */

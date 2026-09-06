@@ -29,7 +29,7 @@ src/
   channels/telegram/       M7  gateway: webhook, commands, replies
   parsing/                 M6  normaliser, extractors, llm parser
   core/
-    identity/              M2
+    identity/              M2  service + repository contracts, onboarding, timezones, errors
     ledger/                M3
     budgets/               M4
     allowance/             M5
@@ -37,13 +37,23 @@ src/
     domain/                pure: money, period maths, allowance formula (clock-injected)
     ports/                 typed interface stubs — the team's coordination mechanism
     testing/               TestClock and friends
+  infrastructure/
+    database/repositories/ Drizzle implementations of core repository ports
   observability/           M9  (fixed pieces built in M6's PR)
   db/
     client.ts              Hyperdrive + postgres.js + Drizzle
     schema/                split per module, barrel-exported from index.ts
     migrations/            generated SQL, forward-only
+test/
+  support/                 reusable test doubles (in-memory repositories, fakes)
+  unit/  integration/
 wrangler.toml
 ```
+
+`CLAUDE.md` at the repo root is the binding architecture/naming/file-placement guide;
+the tree above is the current state, which modules migrate toward as they land. M2 has
+been migrated: its contracts live in `core/identity/`, its Drizzle repository in
+`infrastructure/database/repositories/`, and its test doubles in `test/support/`.
 
 **The schema is split per module on purpose** (M1 §2, master plan §4): each Phase 1/2
 agent only ever touches its own `db/schema/<module>.ts` plus the one barrel line in
@@ -54,7 +64,9 @@ modules coordinate one migration.
 **`core/ports/` is the contract.** Every interface is lifted from its module's own
 plan doc and committed as a compiling-but-unimplemented stub, so Phase 1 agents
 implement against a fixed contract instead of inventing their own and reconciling
-later.
+later. As each module lands it takes ownership of its own contracts, moving them into
+its feature folder (CLAUDE.md: no global `core/ports` dumping ground) — `IdentityService`
+and `ChannelConnectionDirectory` now live in `core/identity/`.
 
 ## Commands
 

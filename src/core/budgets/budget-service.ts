@@ -1,4 +1,4 @@
-import type { CurrencyCode, Id, Instant, LocalDate, MinorUnits, UserId } from './common';
+import type { CurrencyCode, Id, Instant, LocalDate, MinorUnits, UserId } from '../shared/common';
 
 /**
  * M4 — Budgets & Periods. Owns what "this budgeting cycle" means. Every module that
