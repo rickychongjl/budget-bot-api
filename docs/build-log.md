@@ -110,3 +110,53 @@ question it hit. Read between PR reviews (master plan §7). Newest last.
    `foo: T | undefined`. If it causes friction for a Phase 1 agent, it's a one-line
    tsconfig change — but it catches real bugs around optional patch fields, so I'd
    keep it.
+
+---
+
+## Refactor — M1 scaffold restructured to match CLAUDE.md — 2026-09-06
+
+**Branch:** `phase-1` · **Phase:** 0 (structural correction before Phase 1 branches)
+
+### Why
+
+`CLAUDE.md` was added after the M1 PR merged, and it forbids a global `core/ports/`
+barrel and a global `core/domain/` dumping ground, requiring `infrastructure/database/`
+instead of top-level `db/`. The M1 scaffold had built exactly the structure
+`docs/M1-platform-data-configuration.md` §2 specified at the time — a genuine
+conflict between the two source-of-truth documents, not drift. Resolved by moving
+the code to match `CLAUDE.md` (now the authoritative repo-layout reference) before
+M2/M6/M8 branch off the old layout, since moving it later would be far more
+expensive. No behavior, types, or public contracts changed.
+
+### Moved
+
+- `core/ports/common.ts`, `clock.ts` → `core/shared/`.
+- `core/ports/messaging.ts` → `core/shared/messaging.ts` (genuinely cross-module —
+  implemented by `channels/telegram`, consumed by allowance/ledger).
+- `core/ports/{identity,ledger,budget,entitlement}-service.ts` → each module's own
+  folder (`core/identity/`, `core/ledger/`, `core/budgets/`, `core/entitlements/`).
+- `core/ports/daily-allowance-service.ts` → `core/allowance/allowance-service.ts`
+  (filename only — the exported type stays `DailyAllowanceService`).
+- `core/ports/llm-parser.ts` → `parsing/llm-parser.ts` (parsing owns its own port).
+- `core/domain/money.ts` → `core/shared/money.ts`, `core/domain/period.ts` →
+  `core/budgets/period.ts`, `core/domain/allowance.ts` →
+  `core/allowance/daily-target.ts` — the exact per-module placement `CLAUDE.md`'s
+  "Shared domain code" section calls out by name.
+- `db/` → `infrastructure/database/` (`client.ts`, `schema/`, `migrations/`);
+  `drizzle.config.ts` updated to match.
+- `core/testing/test-clock.ts` → `test/support/test-clock.ts` (test doubles don't
+  belong in `src/`).
+- Every module's `index.ts` now re-exports its own contract (type-only) instead of
+  `export {}`, now that the contract lives inside the module folder.
+
+### Not moved — approved exception
+
+`channels/telegram/` stays where it is; `CLAUDE.md` was amended (not the code) to
+document `channels/telegram/` as the accepted location instead of
+`infrastructure/telegram/`, per the user's explicit direction.
+
+### Follow-up for the M6 agent
+
+The open question above about `merchant_category_mapping`'s file is still open, but
+its answer changes: add `infrastructure/database/schema/merchant.ts`, not
+`src/db/schema/merchant.ts`.

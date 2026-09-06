@@ -103,7 +103,7 @@ Ricky's round-3 message asked me to "confirm M2 onboarding is 6 steps now." I ca
 ---
 
 ## Task checklist
-1. Migration for `app_user` + `channel_connection` in `db/schema/identity.ts`.
+1. Migration for `app_user` + `channel_connection` in `infrastructure/database/schema/identity.ts`.
 2. Implement `resolve` / `register` — enforce idempotency via the `(channel, external_id)` unique constraint, not an application-level check-then-insert.
 3. Implement the 5-step onboarding state machine backing `/start` (see "Onboarding" section above): timezone → currency → budget start date → categories+caps (multiple, "Food" pre-seeded, up to tier limit) → reminder category selection. This module collects and hands off values to M3/M4/M8; it doesn't create categories or budgets itself. A returning user who re-sends `/start` gets a settings summary, not a new account.
 4. **Enforce timezone immutability in this module's write path, not just the Telegram UI.** `setInitialTimezone` succeeds once; every later attempt — via `updateSettings`, a forged callback, or a repeated `/start` — is rejected with `TIMEZONE_IMMUTABLE`. An idempotent replay of the *same* value is not a rejected change. Remove `timezone` from the mutable-settings type entirely so it can't even be attempted through the normal patch path.

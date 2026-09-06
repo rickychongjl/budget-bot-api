@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { SystemClock } from '../../src/core/ports/clock';
-import { TestClock } from '../../src/core/testing/test-clock';
+import { SystemClock } from '../../src/core/shared/clock';
+import { TestClock } from '../support/test-clock';
 
 describe('SystemClock', () => {
   it('returns the real wall-clock instant in epoch ms', () => {
