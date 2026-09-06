@@ -1,7 +1,7 @@
-import type { Clock } from '../ports/clock';
-import type { Channel, CurrencyCode, UserId } from '../ports/common';
-import type { LedgerService } from '../ports/ledger-service';
-import type { ChannelConnection } from '../ports/messaging';
+import type { Clock } from '../shared/clock';
+import type { Channel, CurrencyCode, UserId } from '../shared/common';
+import type { LedgerService } from '../ledger/ledger-service';
+import type { ChannelConnection } from '../shared/messaging';
 import type { ChannelConnectionDirectory } from './channel-connection-directory';
 import { RefusalError } from './errors';
 import type { UserRecord, IdentityRepository } from './identity-repository';

@@ -1,5 +1,5 @@
-import type { Channel, CurrencyCode, Instant, LocalDate, LocalTime, UserId } from '../ports/common';
-import type { ChannelConnection } from '../ports/messaging';
+import type { Channel, CurrencyCode, Instant, LocalDate, LocalTime, UserId } from '../shared/common';
+import type { ChannelConnection } from '../shared/messaging';
 import type { OnboardingStep } from './onboarding-step';
 
 /**

@@ -1,4 +1,4 @@
-import type { Id, UserId } from './common';
+import type { Id, UserId } from '../shared/common';
 
 /**
  * Which categories carry the daily 07:00 reminder. **Proposed by M2, owned by M5** —

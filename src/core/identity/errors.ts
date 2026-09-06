@@ -1,4 +1,4 @@
-import type { RefusalCode } from '../ports/common';
+import type { RefusalCode } from '../shared/common';
 
 /**
  * A typed refusal (M11's refusal-code table, `RefusalCode` in `ports/common.ts`).

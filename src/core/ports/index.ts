@@ -1,38 +1,21 @@
 /**
- * `core/ports` — the coordination mechanism for the whole agent team (M1 §3).
+ * `core/ports` — a deliberately temporary holding pen, not the coordination
+ * mechanism it once was (M1 §3).
  *
- * Every other module implements against an interface that is fixed from the first
- * commit, instead of inventing its own and reconciling later. Stub bodies elsewhere
- * may `throw new Error('not implemented')`; the point is that the compiler enforces
- * every contract now.
+ * The platform-wide refactor that dissolved the global `core/ports`/`core/domain`
+ * dumping grounds (see `docs/build-log.md`) moved every M1-committed port into its
+ * owning module: `LedgerService` → `core/ledger`, `BudgetService` → `core/budgets`,
+ * `DailyAllowanceService` → `core/allowance`, `EntitlementService` →
+ * `core/entitlements`, `MessageSender`/`InboundMessage` → `core/shared/messaging`,
+ * `LlmParser` → `parsing`, `Clock`/shared primitives → `core/shared`. `IdentityService`
+ * / `ChannelConnectionDirectory` (M2's own) already live in `core/identity`.
  *
- * Interfaces are lifted from each module's own page:
- *   LedgerService          M3   docs/M3-categories-ledger.md
- *   BudgetService          M4   docs/M4-budgets-periods.md
- *   DailyAllowanceService  M5   docs/M5-daily-allowance-scheduler.md (per-category revision)
- *   EntitlementService     M8   docs/M8-entitlements-limits.md
- *   MessageSender /        M7   docs/M7-telegram-gateway.md
- *     InboundMessage
- *   LlmParser              M6   provider-neutral, privacy-constrained
- *   Clock                  M1   injectable time source
- *
- * Added in Phase 1 by M2 (each file's header says why; build-log has the full note):
+ * What's left is the two contracts M2 proposed but doesn't own (each file's header
+ * says why; build-log has the full note):
  *   CategoryService              M3-owned  category create/list/rename/archive — absent from LedgerService
  *   ReminderSelectionService     M5-owned  which categories carry the 07:00 reminder
- * Both stay here until M3/M5 claim them — see the M2 refactor note in
- * `docs/build-log.md`.
- *
- * M2's own contracts (`IdentityService`, `ChannelConnectionDirectory`) have moved to
- * `core/identity/`, which owns them; CLAUDE.md forbids a global `core/ports` dumping
- * ground. Import them from `core/identity`.
+ * They stay here — not dropped into another module's still-`export {}` stub folder —
+ * until M3/M5 claim them as part of their own PRs.
  */
-export * from './common';
-export * from './clock';
-export * from './ledger-service';
-export * from './budget-service';
-export * from './daily-allowance-service';
-export * from './entitlement-service';
-export * from './messaging';
-export * from './llm-parser';
 export * from './category-service';
 export * from './reminder-selection-service';

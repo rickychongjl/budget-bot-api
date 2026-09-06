@@ -11,10 +11,10 @@ import type {
   ClaimTimezoneOutcome,
   UserStatus,
 } from '../../../core/identity/identity-repository';
-import type { Channel, Instant, UserId } from '../../../core/ports/common';
-import type { ChannelConnection } from '../../../core/ports/messaging';
-import type { Database } from '../../../db/client';
-import { appUser, channelConnection } from '../../../db/schema/identity';
+import type { Channel, Instant, UserId } from '../../../core/shared/common';
+import type { ChannelConnection } from '../../../core/shared/messaging';
+import type { Database } from '../client';
+import { appUser, channelConnection } from '../schema/identity';
 
 /**
  * `IdentityRepository` over Drizzle/Postgres — the only M2 code that touches a DB

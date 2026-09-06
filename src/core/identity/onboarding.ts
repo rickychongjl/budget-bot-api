@@ -1,9 +1,9 @@
-import { formatMinorUnits, toMinorUnits } from '../domain/money';
-import type { BudgetService } from '../ports/budget-service';
+import { formatMinorUnits, toMinorUnits } from '../shared/money';
+import type { BudgetService } from '../budgets/budget-service';
 import type { Category, CategoryService } from '../ports/category-service';
-import type { Clock } from '../ports/clock';
-import type { CurrencyCode, Id, MinorUnits, RefusalCode, Tier, UserId } from '../ports/common';
-import type { EntitlementService } from '../ports/entitlement-service';
+import type { Clock } from '../shared/clock';
+import type { CurrencyCode, Id, MinorUnits, RefusalCode, Tier, UserId } from '../shared/common';
+import type { EntitlementService } from '../entitlements/entitlement-service';
 import type { ReminderSelectionService } from '../ports/reminder-selection-service';
 import type { OnboardingStateStore } from './default-identity-service';
 import { RefusalError } from './errors';

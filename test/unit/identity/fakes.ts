@@ -1,25 +1,13 @@
 import { RefusalError } from '../../../src/core/identity';
+import type { Budget, BudgetPeriod, BudgetService, Period } from '../../../src/core/budgets';
 import type {
-  Budget,
-  BudgetPeriod,
-  BudgetService,
-  Category,
-  CategoryService,
-  CurrencyCode,
   DowngradeEligibility,
   EntitlementService,
   GatedAction,
-  Id,
-  LedgerService,
-  MinorUnits,
-  Page,
-  PageRequest,
-  Period,
-  ReminderSelectionService,
-  Tier,
-  Transaction,
-  UserId,
-} from '../../../src/core/ports';
+} from '../../../src/core/entitlements';
+import type { LedgerService, Page, PageRequest, Transaction } from '../../../src/core/ledger';
+import type { Category, CategoryService, ReminderSelectionService } from '../../../src/core/ports';
+import type { CurrencyCode, Id, MinorUnits, Tier, UserId } from '../../../src/core/shared/common';
 
 /**
  * Minimal fakes for the ports M2 calls. Each enforces just the rule M2's tests care

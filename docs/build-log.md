@@ -418,3 +418,57 @@ CLAUDE.md's "Database connection" wiring example shows.
   The suite `describe.skip`s cleanly without it; its imports were updated and are
   covered by `tsc`.
 - `npm run db:generate` — **not run, deliberately**: no schema shape changed.
+
+---
+
+## Refactor — platform-wide CLAUDE.md restructure lands on this branch — 2026-09-06
+
+**Branch:** `m2-identity-accounts` · **Phase:** 0 (structural correction, not M2 work)
+
+### Why
+
+The M1 scaffold this branch forked from (`3584b3a`) predates `CLAUDE.md`, which
+forbids a global `core/ports/` barrel and a global `core/domain/` dumping ground and
+requires `infrastructure/database/` instead of top-level `db/`. This M2 branch had
+already relocated its own `IdentityService` contract into `core/identity/` and
+flagged the rest ("Deliberately not done — out of this PR's scope", above) as a
+repo-wide follow-up. That follow-up landed on `phase-1` as commit `832cdf6`; this
+entry brings the equivalent change onto this branch so it isn't left conflicting
+with `phase-1` when it merges.
+
+### Moved (mirrors `832cdf6`, adapted to what M2 already did)
+
+- `core/ports/common.ts`, `clock.ts` → `core/shared/`.
+- `core/ports/messaging.ts` → `core/shared/messaging.ts`.
+- `core/ports/{budget,ledger,entitlement}-service.ts` → each module's own folder.
+- `core/ports/daily-allowance-service.ts` → `core/allowance/allowance-service.ts`.
+- `core/ports/llm-parser.ts` → `parsing/llm-parser.ts`.
+- `core/domain/money.ts` → `core/shared/money.ts`, `core/domain/period.ts` →
+  `core/budgets/period.ts`, `core/domain/allowance.ts` →
+  `core/allowance/daily-target.ts`.
+- `db/` → `infrastructure/database/` (`client.ts`, `schema/` — including this
+  branch's real `identity.ts` — `migrations/`, including the already-generated
+  `0000_identity.sql` and its snapshot); `drizzle.config.ts` updated to match.
+- `core/testing/test-clock.ts` → `test/support/test-clock.ts`; every test file that
+  imported it (`clock.test.ts`, `scaffold.test.ts`, `identity/fakes.ts`'s callers,
+  `default-identity-service.test.ts`, `onboarding.test.ts`,
+  `integration/identity.test.ts`) updated to match.
+- Every non-identity core module's `index.ts` now re-exports its contract
+  (type-only) instead of `export {}`.
+
+### Not moved — `core/ports/` still exists, on purpose
+
+`category-service.ts` and `reminder-selection-service.ts` **stay in `core/ports/`**,
+exactly as this branch's own M2 entry (above) already decided: they're proposed by
+M2 but owned by M3/M5, and dropping them into another module's still-empty stub
+folder now would collide with those modules' own PRs. `core/ports/index.ts` is
+trimmed to just these two exports, with an updated header explaining why the
+folder still exists.
+
+### Verification
+
+- `npm run typecheck` — passes.
+- `npm test` — 70 passed, 6 skipped — identical to this branch's prior baseline.
+- `npm run db:generate` — no-op; the existing `identity` migration snapshot is
+  unchanged.
+- `npm run test:integration` — not executed (no `DATABASE_URL` in this environment).

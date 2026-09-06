@@ -1,10 +1,10 @@
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createDatabase } from '../../src/db/client';
-import type { Database } from '../../src/db/client';
+import { createDatabase } from '../../src/infrastructure/database/client';
+import type { Database } from '../../src/infrastructure/database/client';
 import { DefaultIdentityService } from '../../src/core/identity';
 import { DrizzleIdentityRepository } from '../../src/infrastructure/database/repositories/drizzle-identity-repository';
-import { TestClock } from '../../src/core/testing/test-clock';
+import { TestClock } from '../support/test-clock';
 import { FakeLedger } from '../unit/identity/fakes';
 
 /**

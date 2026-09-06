@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { DefaultIdentityService, OnboardingService, STARTER_CATEGORY } from '../../../src/core/identity';
 import type { OnboardingReply } from '../../../src/core/identity';
 import { InMemoryIdentityRepository } from '../../support/in-memory-identity-repository';
-import { TestClock } from '../../../src/core/testing/test-clock';
+import { TestClock } from '../../support/test-clock';
 import {
   FakeBudgets,
   FakeCategories,

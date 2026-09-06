@@ -1,4 +1,4 @@
-import type { Instant, LocalDate, LocalTime } from '../ports/common';
+import type { Instant, LocalDate, LocalTime } from '../shared/common';
 
 /**
  * Pure timezone helpers owned by M2 (onboarding step 1, and the "local date derived at

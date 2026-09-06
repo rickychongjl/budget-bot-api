@@ -1,5 +1,5 @@
-import type { Channel, UserId } from '../ports/common';
-import type { ChannelConnection } from '../ports/messaging';
+import type { Channel, UserId } from '../shared/common';
+import type { ChannelConnection } from '../shared/messaging';
 
 /**
  * M2's read/deactivate surface over `channel_connection` for the transport layer.

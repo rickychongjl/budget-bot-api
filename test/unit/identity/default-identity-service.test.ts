@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DefaultIdentityService, RefusalError } from '../../../src/core/identity';
 import { InMemoryIdentityRepository } from '../../support/in-memory-identity-repository';
-import { TestClock } from '../../../src/core/testing/test-clock';
+import { TestClock } from '../../support/test-clock';
 import { FakeLedger } from './fakes';
 
 /**

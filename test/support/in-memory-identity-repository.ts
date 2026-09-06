@@ -7,8 +7,8 @@ import type {
   RegisterConnectionResult,
   ClaimTimezoneOutcome,
 } from '../../src/core/identity';
-import type { Channel, Instant, UserId } from '../../src/core/ports/common';
-import type { ChannelConnection } from '../../src/core/ports/messaging';
+import type { Channel, Instant, UserId } from '../../src/core/shared/common';
+import type { ChannelConnection } from '../../src/core/shared/messaging';
 
 /**
  * `IdentityRepository` in memory, for unit tests of the M2 service logic.

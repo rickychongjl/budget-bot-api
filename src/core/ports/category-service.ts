@@ -1,4 +1,4 @@
-import type { Id, Instant, UserId } from './common';
+import type { Id, Instant, UserId } from '../shared/common';
 
 /**
  * M3 — Categories (the category half of Categories & Ledger). **Proposed by M2, owned
