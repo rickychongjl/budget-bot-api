@@ -19,7 +19,7 @@
           "name": "timezone",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "currency_code": {
           "name": "currency_code",

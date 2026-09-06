@@ -7,7 +7,7 @@ import {
   localDateAt,
   localTimeAt,
   searchTimezones,
-} from '../../../src/core/domain/timezone';
+} from '../../../src/core/identity';
 
 describe('canonicalTimezone', () => {
   it('accepts every curated AU zone', () => {

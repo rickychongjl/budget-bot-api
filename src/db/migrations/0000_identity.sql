@@ -1,6 +1,6 @@
 CREATE TABLE "app_user" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"timezone" text,
+	"timezone" text NOT NULL,
 	"currency_code" char(3) DEFAULT 'AUD' NOT NULL,
 	"period_anchor_date" date,
 	"reminder_local_time" time DEFAULT '07:00' NOT NULL,

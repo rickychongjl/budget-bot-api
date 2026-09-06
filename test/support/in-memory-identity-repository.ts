@@ -1,33 +1,34 @@
 import type {
-  AppUserPatch,
-  AppUserRecord,
-  ConnectionLookup,
+  UserRecordPatch,
+  UserRecord,
+  ConnectionRecord,
   IdentityRepository,
-  RegisterOutcome,
-  SetTimezoneOutcome,
-} from '../identity/repository';
-import type { Channel, Instant, UserId } from '../ports/common';
-import type { ChannelConnection } from '../ports/messaging';
+  RegisterConnectionInput,
+  RegisterConnectionResult,
+  ClaimTimezoneOutcome,
+} from '../../src/core/identity';
+import type { Channel, Instant, UserId } from '../../src/core/ports/common';
+import type { ChannelConnection } from '../../src/core/ports/messaging';
 
 /**
  * `IdentityRepository` in memory, for unit tests of the M2 service logic.
  *
  * It reproduces the two DB guarantees the service relies on — the
  * `(channel, external_id)` unique constraint and the conditional
- * `timezone is null` update — as *synchronous* checks at the moment of the write, so
+ * `timezone = ''` update — as *synchronous* checks at the moment of the write, so
  * concurrent `register`/`setInitialTimezone` calls interleaved across `await`s behave
  * like they do against Postgres. It also cascades deletes. It does not enforce check
  * constraints; that is what the integration tier is for.
  */
 export class InMemoryIdentityRepository implements IdentityRepository {
-  readonly users = new Map<UserId, AppUserRecord>();
+  readonly users = new Map<UserId, UserRecord>();
   readonly connections = new Map<string, ChannelConnection>();
   #seq = 0;
 
   /** Rows other modules would own, keyed by table, so cascade tests can assert them gone. */
   readonly foreignRows = new Map<string, Set<UserId>>();
 
-  async findConnection(channel: Channel, externalId: string): Promise<ConnectionLookup | null> {
+  async findConnection(channel: Channel, externalId: string): Promise<ConnectionRecord | null> {
     await tick();
     const conn = this.connections.get(key(channel, externalId));
     if (!conn) return null;
@@ -35,17 +36,12 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     return user ? { userId: user.id, onboardingStep: user.onboardingStep } : null;
   }
 
-  async register(
-    channel: Channel,
-    externalId: string,
-    chatId: string,
-    username: string | null,
-    now: Instant,
-  ): Promise<RegisterOutcome> {
+  async registerConnection(input: RegisterConnectionInput): Promise<RegisterConnectionResult> {
+    const { channel, externalId, chatId, username, now } = input;
     // Simulate the transaction: speculative user row, then the constrained insert.
-    const speculative: AppUserRecord = {
+    const speculative: UserRecord = {
       id: this.nextId('user'),
-      timezone: null,
+      timezone: '',
       currencyCode: 'AUD',
       periodAnchorDate: null,
       reminderLocalTime: '07:00',
@@ -79,26 +75,26 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     return { userId: user.id, isNew: false, onboardingStep: user.onboardingStep };
   }
 
-  async findUser(userId: UserId): Promise<AppUserRecord | null> {
+  async findUser(userId: UserId): Promise<UserRecord | null> {
     await tick();
     const user = this.users.get(userId);
     return user ? { ...user } : null;
   }
 
-  async setTimezoneIfUnset(userId: UserId, timezone: string, now: Instant): Promise<SetTimezoneOutcome> {
+  async claimInitialTimezone(userId: UserId, timezone: string, now: Instant): Promise<ClaimTimezoneOutcome> {
     await tick();
     const user = this.users.get(userId);
     if (!user) return 'missing';
-    if (user.timezone !== null) return 'already_set';
+    if (user.timezone !== '') return 'already_set';
     this.users.set(userId, { ...user, timezone, updatedAt: now });
     return 'set';
   }
 
-  async updateUser(userId: UserId, patch: AppUserPatch, now: Instant): Promise<AppUserRecord | null> {
+  async updateUser(userId: UserId, patch: UserRecordPatch, now: Instant): Promise<UserRecord | null> {
     await tick();
     const user = this.users.get(userId);
     if (!user) return null;
-    const next: AppUserRecord = { ...user, updatedAt: now };
+    const next: UserRecord = { ...user, updatedAt: now };
     if (patch.currencyCode !== undefined) next.currencyCode = patch.currencyCode;
     if (patch.periodAnchorDate !== undefined) next.periodAnchorDate = patch.periodAnchorDate;
     if (patch.reminderLocalTime !== undefined) next.reminderLocalTime = patch.reminderLocalTime;
@@ -114,7 +110,7 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     for (const rows of this.foreignRows.values()) rows.delete(userId);
   }
 
-  async activeConnection(userId: UserId, channel: Channel): Promise<ChannelConnection | null> {
+  async findActiveConnection(userId: UserId, channel: Channel): Promise<ChannelConnection | null> {
     await tick();
     for (const conn of this.connections.values()) {
       if (conn.userId === userId && conn.channel === channel && conn.isActive) return { ...conn };

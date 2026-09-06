@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { RefusalError } from '../../../src/core/domain/refusal';
-import { IdentityServiceImpl } from '../../../src/core/identity/identity-service';
-import { InMemoryIdentityRepository } from '../../../src/core/testing/in-memory-identity-repository';
+import { DefaultIdentityService, RefusalError } from '../../../src/core/identity';
+import { InMemoryIdentityRepository } from '../../support/in-memory-identity-repository';
 import { TestClock } from '../../../src/core/testing/test-clock';
 import { FakeLedger } from './fakes';
 
@@ -15,13 +14,13 @@ import { FakeLedger } from './fakes';
 let repo: InMemoryIdentityRepository;
 let clock: TestClock;
 let ledger: FakeLedger;
-let identity: IdentityServiceImpl;
+let identity: DefaultIdentityService;
 
 beforeEach(() => {
   repo = new InMemoryIdentityRepository();
   clock = new TestClock('2026-09-06T00:00:00.000Z');
   ledger = new FakeLedger();
-  identity = new IdentityServiceImpl(repo, clock, ledger);
+  identity = new DefaultIdentityService({ repo, clock, ledger });
 });
 
 async function onboardedUser(timezone = 'Australia/Sydney') {
@@ -63,6 +62,15 @@ describe('register / resolve', () => {
     expect(a.userId).not.toBe(b.userId);
   });
 
+  it('uses the injected clock for initial user and connection timestamps', async () => {
+    const now = clock.now();
+    const { userId } = await identity.register('telegram', 'clocked', 'clocked');
+    const user = await repo.findUser(userId);
+    const connection = await identity.findActiveConnection(userId, 'telegram');
+    expect(user).toMatchObject({ createdAt: now, updatedAt: now });
+    expect(connection?.linkedAt).toBe(now);
+  });
+
   it('resolve returns null for an unknown id', async () => {
     expect(await identity.resolve('telegram', 'nobody')).toBeNull();
   });
@@ -70,10 +78,10 @@ describe('register / resolve', () => {
   it('re-registering refreshes delivery details and re-activates a blocked connection', async () => {
     const { userId } = await identity.register('telegram', '9', '9', 'old');
     await identity.deactivateConnection(userId, 'telegram');
-    expect(await identity.activeConnection(userId, 'telegram')).toBeNull();
+    expect(await identity.findActiveConnection(userId, 'telegram')).toBeNull();
 
     await identity.register('telegram', '9', '9', 'new');
-    const conn = await identity.activeConnection(userId, 'telegram');
+    const conn = await identity.findActiveConnection(userId, 'telegram');
     expect(conn?.isActive).toBe(true);
     expect(conn?.username).toBe('new');
   });
@@ -135,7 +143,7 @@ describe('timezone immutability', () => {
     await expect(identity.setInitialTimezone(userId, 'Mars/Olympus_Mons')).rejects.toMatchObject({
       code: 'INVALID_ARGUMENT',
     });
-    expect((await repo.findUser(userId))?.timezone).toBeNull();
+    expect((await repo.findUser(userId))?.timezone).toBe('');
   });
 });
 
@@ -241,6 +249,15 @@ describe('updateSettings — anchor date and reminder time', () => {
     expect((await repo.findUser(userId))?.updatedAt).toBe(before);
   });
 
+  it('rejects unknown setting keys from JavaScript or forged callers', async () => {
+    const userId = await onboardedUser();
+    const forged = { locale: 'en-AU' } as unknown as Parameters<typeof identity.updateSettings>[1];
+    await expect(identity.updateSettings(userId, forged)).rejects.toMatchObject({
+      code: 'INVALID_ARGUMENT',
+      message: expect.stringContaining('locale'),
+    });
+  });
+
   it('is ONBOARDING_REQUIRED before a timezone exists', async () => {
     const { userId } = await identity.register('telegram', '1', '1');
     await expect(identity.updateSettings(userId, { currencyCode: 'NZD' })).rejects.toMatchObject({
@@ -266,7 +283,7 @@ describe('exportAccount / deleteAccount', () => {
 
     expect(repo.users.has(userId)).toBe(false);
     expect(await identity.resolve('telegram', '12345')).toBeNull();
-    expect(await identity.activeConnection(userId, 'telegram')).toBeNull();
+    expect(await identity.findActiveConnection(userId, 'telegram')).toBeNull();
     for (const rows of repo.foreignRows.values()) expect(rows.has(userId)).toBe(false);
     // The other user is untouched.
     expect(repo.users.has(other.userId)).toBe(true);

@@ -7,7 +7,8 @@ import type { RefusalCode } from '../ports/common';
  * copy table — the user never sees a raw error. `message` is a plain-language
  * explanation that M7 may show verbatim (it contains no user-supplied text unless the
  * thrower escaped it). Added by M2; M3/M8 are welcome to throw the same class so M7 has
- * exactly one thing to catch.
+ * exactly one thing to catch — at which point it belongs in `core/shared`, not here.
+ * See the M2 refactor note in `docs/build-log.md`.
  */
 export class RefusalError extends Error {
   override readonly name = 'RefusalError';

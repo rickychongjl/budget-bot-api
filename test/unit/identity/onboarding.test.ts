@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { IdentityServiceImpl } from '../../../src/core/identity/identity-service';
-import { OnboardingService, STARTER_CATEGORY } from '../../../src/core/identity/onboarding';
-import type { OnboardingReply } from '../../../src/core/identity/onboarding';
-import { InMemoryIdentityRepository } from '../../../src/core/testing/in-memory-identity-repository';
+import { DefaultIdentityService, OnboardingService, STARTER_CATEGORY } from '../../../src/core/identity';
+import type { OnboardingReply } from '../../../src/core/identity';
+import { InMemoryIdentityRepository } from '../../support/in-memory-identity-repository';
 import { TestClock } from '../../../src/core/testing/test-clock';
 import {
   FakeBudgets,
@@ -23,7 +22,7 @@ import {
 
 let repo: InMemoryIdentityRepository;
 let clock: TestClock;
-let identity: IdentityServiceImpl;
+let identity: DefaultIdentityService;
 let categories: FakeCategories;
 let budgets: FakeBudgets;
 let reminders: FakeReminders;
@@ -34,7 +33,7 @@ beforeEach(() => {
   repo = new InMemoryIdentityRepository();
   // 2026-09-06 09:00 Sydney (AEST, UTC+10) — 2026-09-05 23:00 UTC, so "today" differs by zone.
   clock = new TestClock('2026-09-05T23:00:00.000Z');
-  identity = new IdentityServiceImpl(repo, clock, new FakeLedger());
+  identity = new DefaultIdentityService({ repo, clock, ledger: new FakeLedger() });
   categories = new FakeCategories();
   budgets = new FakeBudgets();
   reminders = new FakeReminders();
@@ -118,7 +117,7 @@ describe('happy path — 5 steps', () => {
     const p6 = prompt(await onboarding.answer(userId, { value: 'done', step: 'categories' }));
     expect(p6.step).toBe('reminders');
     expect(p6.text).toContain('07:00');
-    expect(p6.options.map((o) => o.label)).toEqual(['Food', 'Eating out']);
+    expect(p6.options.map((o) => o.label)).toEqual(['Food', 'Eating out', 'Done']);
 
     const done = await onboarding.answer(userId, { value: foodId ?? '', step: 'reminders' });
     expect(done.kind).toBe('complete');
@@ -143,8 +142,9 @@ describe('happy path — 5 steps', () => {
   it('a repeat /start after completion returns a settings summary, not a new account', async () => {
     const userId = await newUser();
     await throughStep3(userId);
+    await onboarding.answer(userId, { value: 'Food 500' });
     await onboarding.answer(userId, { value: 'done' });
-    await onboarding.answer(userId, { value: 'Food' });
+    await onboarding.answer(userId, { value: 'done' });
 
     const again = await onboarding.start(userId);
     expect(again.kind).toBe('summary');
@@ -185,7 +185,7 @@ describe('step 1 — timezone search', () => {
     expect(p.step).toBe('timezone');
     expect(p.text).toContain("couldn't find");
     expect(p.options.map((o) => o.value)).toContain('Australia/Melbourne');
-    expect((await repo.findUser(userId))?.timezone).toBeNull();
+    expect((await repo.findUser(userId))?.timezone).toBe('');
   });
 });
 
@@ -204,8 +204,9 @@ describe('timezone cannot move through the machine', () => {
   it('a forged step-1 callback after completion is TIMEZONE_IMMUTABLE; an identical replay just re-summarises', async () => {
     const userId = await newUser();
     await throughStep3(userId);
+    await onboarding.answer(userId, { value: 'Food 500' });
     await onboarding.answer(userId, { value: 'done' });
-    await onboarding.answer(userId, { value: 'Food' });
+    await onboarding.answer(userId, { value: 'done' });
 
     const forged = await onboarding.answer(userId, { value: 'Australia/Perth', step: 'timezone' });
     expect(forged).toMatchObject({ kind: 'refused', code: 'TIMEZONE_IMMUTABLE', prompt: null });
@@ -232,7 +233,7 @@ describe('step 2 / 3 validation', () => {
     const reply = await onboarding.answer(userId, { value: 'XXX' });
     expect(reply).toMatchObject({ kind: 'refused', code: 'INVALID_ARGUMENT' });
     if (reply.kind === 'refused') expect(reply.prompt?.step).toBe('currency');
-    expect(await identity.onboardingStep(userId)).toBe('currency');
+    expect(await identity.getOnboardingStep(userId)).toBe('currency');
   });
 
   it('accepts a typed non-default currency', async () => {
@@ -294,6 +295,15 @@ describe('step 4 — capacity and input rules', () => {
     expect((await categories.list(userId)).length).toBe(1);
   });
 
+  it('renames the starter category through M3 before onboarding completes', async () => {
+    const userId = await newUser();
+    await throughStep3(userId);
+    const reply = prompt(await onboarding.answer(userId, { value: 'rename Food to Groceries' }));
+    expect(reply.text).toContain('Groceries — no cap');
+    expect(reply.text).not.toContain('• Food');
+    expect((await categories.list(userId)).map((category) => category.name)).toEqual(['Groceries']);
+  });
+
   it('rejects a malformed cap and a zero cap without creating anything', async () => {
     const userId = await newUser();
     await throughStep3(userId);
@@ -308,7 +318,19 @@ describe('step 4 — capacity and input rules', () => {
     prompt(await onboarding.answer(userId, { value: 'remove Food' }));
     const reply = await onboarding.answer(userId, { value: 'done' });
     expect(reply).toMatchObject({ kind: 'refused', code: 'INVALID_ARGUMENT' });
-    expect(await identity.onboardingStep(userId)).toBe('categories');
+    expect(await identity.getOnboardingStep(userId)).toBe('categories');
+  });
+
+  it('refuses to finish step 4 until at least one category has a budget', async () => {
+    const userId = await newUser();
+    await throughStep3(userId);
+    expect(await onboarding.answer(userId, { value: 'done' })).toMatchObject({
+      kind: 'refused',
+      code: 'INVALID_ARGUMENT',
+      message: expect.stringContaining('monthly budget'),
+    });
+    await onboarding.answer(userId, { value: 'Food 400' });
+    expect(prompt(await onboarding.answer(userId, { value: 'done' })).step).toBe('reminders');
   });
 });
 
@@ -317,6 +339,7 @@ describe('step 5 — reminder selection', () => {
     const userId = await newUser();
     await throughStep3(userId);
     prompt(await onboarding.answer(userId, { value: 'Fun' }));
+    prompt(await onboarding.answer(userId, { value: 'Food 500' }));
     await onboarding.answer(userId, { value: 'done' });
     await reminders.enable(userId, (await categories.list(userId))[0]?.id ?? ''); // simulate a prior selection
     const reply = await onboarding.answer(userId, { value: 'Fun' });
@@ -329,6 +352,7 @@ describe('step 5 — reminder selection', () => {
     await throughStep3(userId);
     prompt(await onboarding.answer(userId, { value: 'Fun' }));
     prompt(await onboarding.answer(userId, { value: 'Transport' }));
+    prompt(await onboarding.answer(userId, { value: 'Food 500' }));
     const p = prompt(await onboarding.answer(userId, { value: 'done' }));
     expect(p.text).toContain('up to 5');
 
@@ -343,12 +367,15 @@ describe('step 5 — reminder selection', () => {
     }
   });
 
-  it('requires at least one reminder category before Done', async () => {
+  it('allows Done with no reminder category selected', async () => {
     const userId = await newUser();
     await throughStep3(userId);
-    await onboarding.answer(userId, { value: 'done' });
-    expect(await onboarding.answer(userId, { value: 'done' })).toMatchObject({ kind: 'refused', code: 'INVALID_ARGUMENT' });
-    expect(await onboarding.answer(userId, { value: 'Nope' })).toMatchObject({ kind: 'refused', code: 'CATEGORY_NOT_FOUND' });
-    expect(await identity.onboardingStep(userId)).toBe('reminders');
+    await onboarding.answer(userId, { value: 'Food 500' });
+    const reminderPrompt = prompt(await onboarding.answer(userId, { value: 'done' }));
+    expect(reminderPrompt.options.map((option) => option.label)).toEqual(['Food', 'Done']);
+    const complete = await onboarding.answer(userId, { value: 'done' });
+    expect(complete).toMatchObject({ kind: 'complete' });
+    if (complete.kind === 'complete') expect(complete.summary.categories.every((category) => !category.reminder)).toBe(true);
+    expect(await identity.getOnboardingStep(userId)).toBe('done');
   });
 });

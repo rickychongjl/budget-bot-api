@@ -1,5 +1,5 @@
-import type { Channel, UserId } from './common';
-import type { ChannelConnection } from './messaging';
+import type { Channel, UserId } from '../ports/common';
+import type { ChannelConnection } from '../ports/messaging';
 
 /**
  * M2's read/deactivate surface over `channel_connection` for the transport layer.
@@ -15,7 +15,7 @@ import type { ChannelConnection } from './messaging';
  */
 export interface ChannelConnectionDirectory {
   /** The active connection for delivering to `userId` on `channel`, or null if none/blocked. */
-  activeConnection(userId: UserId, channel: Channel): Promise<ChannelConnection | null>;
+  findActiveConnection(userId: UserId, channel: Channel): Promise<ChannelConnection | null>;
 
   /** 403 path — the user blocked the bot. Never retried; `register` re-activates on next `/start`. */
   deactivateConnection(userId: UserId, channel: Channel): Promise<void>;
