@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { MechanicalTransactionParser } from '../../src/parsing/mechanical-parser';
-import { MessageNormalizer } from '../../src/parsing/normalizer';
+import { DefaultMechanicalTransactionParser } from '../../src/parsing/mechanical-parser';
+import { DefaultMessageNormalizer } from '../../src/parsing/normalizer';
 import { TODAY } from '../eval/fixture';
 
-const normalizer = new MessageNormalizer();
-const parser = new MechanicalTransactionParser(normalizer);
+const normalizer = new DefaultMessageNormalizer();
+const parser = new DefaultMechanicalTransactionParser(normalizer);
 const parse = (text: string, today = TODAY) => parser.parse(normalizer.normalize(text), today);
 
 describe('MechanicalTransactionParser — amounts', () => {

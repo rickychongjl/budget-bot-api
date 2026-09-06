@@ -1,17 +1,14 @@
 import { TestClock } from '../../src/core/testing/test-clock';
-import { MechanicalTransactionParser } from '../../src/parsing/mechanical-parser';
-import { MessageNormalizer } from '../../src/parsing/normalizer';
+import { DefaultMechanicalTransactionParser } from '../../src/parsing/mechanical-parser';
+import { DefaultMessageNormalizer } from '../../src/parsing/normalizer';
 import { TransactionParsingPipeline, type ParsingPolicy } from '../../src/parsing/pipeline';
-import {
-  InMemoryMerchantMappingRepository,
-  InMemoryParseEventRepository,
-  RecordingAllowanceService,
-  RecordingLedgerService,
-  ScriptedLlmParser,
-  type ScriptedLlmResponse,
-} from '../../src/parsing/testing';
 import type { CategoryRef, UserParseContext } from '../../src/parsing/types';
-import { TransactionCandidateValidator } from '../../src/parsing/validator';
+import { DefaultTransactionCandidateValidator } from '../../src/parsing/validator';
+import { InMemoryMerchantMappingRepository } from '../support/in-memory-merchant-mapping-repository';
+import { InMemoryParseEventRepository } from '../support/in-memory-parse-event-repository';
+import { RecordingAllowanceService } from '../support/recording-allowance-service';
+import { RecordingLedgerService } from '../support/recording-ledger-service';
+import { ScriptedLlmParser, type ScriptedLlmResponse } from '../support/scripted-llm-parser';
 
 /**
  * One fixed user for every parser test and the eval set, so expectations can be
@@ -84,7 +81,7 @@ export interface Harness {
 
 export function makeHarness(options: { llm?: ScriptedLlmResponse; policy?: Partial<ParsingPolicy>; seedMappings?: boolean } = {}): Harness {
   const clock = new TestClock(NOW_ISO);
-  const normalizer = new MessageNormalizer();
+  const normalizer = new DefaultMessageNormalizer();
   const mappings = new InMemoryMerchantMappingRepository();
   if (options.seedMappings ?? true) {
     for (const m of CONFIRMED_MAPPINGS) {
@@ -104,10 +101,10 @@ export function makeHarness(options: { llm?: ScriptedLlmResponse; policy?: Parti
   const pipeline = new TransactionParsingPipeline({
     clock,
     normalizer,
-    mechanicalParser: new MechanicalTransactionParser(normalizer),
+    mechanicalParser: new DefaultMechanicalTransactionParser(normalizer),
     merchantMappings: mappings,
     llmParser: llm,
-    validator: new TransactionCandidateValidator(normalizer),
+    validator: new DefaultTransactionCandidateValidator(normalizer),
     parseEvents,
     ledger,
     allowance,

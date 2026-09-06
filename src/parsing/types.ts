@@ -31,7 +31,7 @@ export interface UserParseContext {
   accountCreatedOn?: LocalDate;
 }
 
-/** Output of `IMessageNormalizer`. */
+/** Output of `MessageNormalizer`. */
 export interface NormalizedMessage {
   /** Exactly what the user sent — retained on the transaction (M3 `raw_text`). */
   original: string;
@@ -62,7 +62,7 @@ export interface ExtractedDate {
 
 export type IntentMarker = 'income' | 'refund' | 'correction' | 'expense';
 
-/** Output of `IMechanicalTransactionParser`. */
+/** Output of `MechanicalTransactionParser`. */
 export interface MechanicalCandidate {
   normalized: NormalizedMessage;
   amounts: readonly ExtractedAmount[];

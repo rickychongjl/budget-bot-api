@@ -14,8 +14,10 @@
  *   EntitlementService     M8   docs/M8-entitlements-limits.md
  *   MessageSender /        M7   docs/M7-telegram-gateway.md
  *     InboundMessage
- *   LlmParser              M6   provider-neutral, privacy-constrained
  *   Clock                  M1   injectable time source
+ *
+ * M6's `LlmParser` port now lives with the module that owns it
+ * (`src/parsing/llm-parser.ts`) — CLAUDE.md, "Ports and interfaces".
  */
 export * from './common';
 export * from './clock';
@@ -25,4 +27,3 @@ export * from './budget-service';
 export * from './daily-allowance-service';
 export * from './entitlement-service';
 export * from './messaging';
-export * from './llm-parser';

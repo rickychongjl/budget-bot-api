@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { LlmParseError } from '../../src/core/ports/llm-parser';
-import { llmResult } from '../../src/parsing/testing';
+import { LlmParseError } from '../../src/parsing/llm-parser';
+import { llmResult } from '../support/scripted-llm-parser';
 import { USER_ID, categoryId, makeHarness } from '../eval/fixture';
 
 const woolworthsGuess = llmResult({

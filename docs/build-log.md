@@ -269,5 +269,94 @@ question it hit. Read between PR reviews (master plan §7). Newest last.
    conversion"). The M3 agent should reuse it rather than re-implement; flagging so
    the Phase 2 pair don't collide with it.
 7. **Command surface for mapping management** (M6 open decision 3) is untouched —
-   `IMerchantMappingRepository.remove` exists for M11's future `/categories`-adjacent
+   `MerchantMappingRepository.remove` exists for M11's future `/categories`-adjacent
    command, nothing calls it yet.
+
+### CLAUDE.md conventions pass — 2026-09-06 (follow-up commit on the same branch)
+
+`CLAUDE.md` landed on `phase-1` after this PR was opened. It was merged in and its
+conventions applied to M6/M9's own code. **No behaviour changed** — same routing,
+same policy, same privacy rules, same 71 passing tests (1 skipped: the live-LLM eval).
+
+**Moved / renamed**
+
+- **`I`-prefix dropped everywhere** (CLAUDE.md: "Do not prefix interfaces with `I`").
+  Where the interface name collided with the class, the implementation took the
+  `Default` prefix CLAUDE.md prescribes:
+  `IMessageNormalizer`→`MessageNormalizer` / `MessageNormalizer`→`DefaultMessageNormalizer`;
+  `IMechanicalTransactionParser`→`MechanicalTransactionParser` /
+  `MechanicalTransactionParser`→`DefaultMechanicalTransactionParser`;
+  `ITransactionCandidateValidator`→`TransactionCandidateValidator` /
+  `TransactionCandidateValidator`→`DefaultTransactionCandidateValidator`;
+  `IMerchantMappingRepository`→`MerchantMappingRepository`;
+  `IParseEventRepository`→`ParseEventRepository`. The redundant alias
+  `ILlmTransactionParser = LlmParser` is gone — callers use `LlmParser` directly.
+- **Concrete adapters moved to `src/infrastructure/`** (CLAUDE.md target structure):
+  `DrizzleMerchantMappingRepository` →
+  `infrastructure/database/repositories/drizzle-merchant-mapping-repository.ts`;
+  `DrizzleParseEventRepository` →
+  `infrastructure/database/repositories/drizzle-parse-event-repository.ts`;
+  `OpenAiLlmTransactionParser` → `infrastructure/llm/openai-parser.ts`, renamed
+  `OpenAiLlmParser` to match the port it implements. The ports themselves stay in
+  `src/parsing/` next to the pipeline that consumes them, so `src/parsing/**` no
+  longer imports Drizzle or the OpenAI SDK at all.
+- **`LlmParser` port moved out of `core/ports/`** into `src/parsing/llm-parser.ts`
+  (CLAUDE.md: "Do not use a global `core/ports` folder as a dumping ground"); the one
+  `export * from './llm-parser'` line was dropped from `core/ports/index.ts` and
+  nothing else in that barrel was touched.
+- **`core/domain/money.ts` → `core/shared/money.ts`** with a `core/shared/index.ts`
+  barrel — CLAUDE.md names it there explicitly. `core/domain/index.ts` lost only its
+  `money` re-export.
+- **`createParsingPipeline` moved to `infrastructure/create-parsing-pipeline.ts`.**
+  It wires Drizzle + OpenAI into the pipeline, so it cannot live in `src/parsing/`
+  without inverting CLAUDE.md's dependency direction. See conflict 3 below.
+- **Test doubles moved out of `src/`**: `src/parsing/testing/index.ts` →
+  `test/support/{fake-id,in-memory-merchant-mapping-repository,
+  in-memory-parse-event-repository,recording-ledger-service,
+  recording-allowance-service,scripted-llm-parser}.ts` (CLAUDE.md, "Testing":
+  reusable test-only code belongs under `test/support/`, one double per file).
+- **Two method renames** for CLAUDE.md's verb-first / business-terminology rule:
+  `MessageNormalizer.merchantKey` → `deriveMerchantKey`, and
+  `MerchantMappingRepository.touch` → `markUsed` (`touch` is database/unix jargon).
+
+**Architectural conflicts flagged rather than resolved** — each would require editing
+files owned by other, still-unbuilt modules, which CLAUDE.md's change discipline
+("do not combine broad structural refactoring with an unrelated feature change")
+rules out for this PR:
+
+1. **`parsing/` is not a `core/<module>` in CLAUDE.md's target tree** — it and
+   `observability/` are listed as bare top-level folders, while the module-ownership
+   model in "Core modules" would make M6 a business capability like `core/ledger/`.
+   The ports were therefore kept in `src/parsing/`, matching the tree literally. If
+   the intent is that M6 becomes `core/parsing/` with `infrastructure/` adapters, that
+   is a one-time rename worth doing across `parsing/` + `observability/` together,
+   ideally when M7 wires them in.
+2. **`core/ports/common.ts` and `core/ports/clock.ts` are not yet under
+   `core/shared/`**, where CLAUDE.md's tree puts them. Every module — including the
+   untouched Phase 2/3 stubs and the in-flight M8 PR — imports them from
+   `core/ports/`, so moving them is a repo-wide refactor of its own. `core/shared/`
+   currently holds only `money.ts` as a result. Likewise `core/domain/period.ts` and
+   `core/domain/allowance.ts` still sit in the `core/domain` "dumping ground"
+   CLAUDE.md warns against; they belong to M4/M5 and should move to
+   `core/budgets/period.ts` / `core/allowance/daily-target.ts` when those land.
+3. **The composition root should own the wiring.** CLAUDE.md says `src/index.ts`
+   creates the database client, repositories and services. `createParsingPipeline`
+   is that composition expressed as a factory, parked under `infrastructure/` because
+   `src/index.ts` does not import `parsing/` until M7. When M7 wires the webhook, the
+   factory's body should move into `src/index.ts` (or be called from it) and the
+   `db`/`openAiApiKey` arguments should come from the Worker's bindings there.
+4. **`src/db/` is not yet `infrastructure/database/`.** CLAUDE.md puts `client.ts`,
+   `schema/` and `migrations/` under `infrastructure/database/`. `db/schema/` is one
+   barrel shared by all eight modules (most still stubs) and one `drizzle.config.ts`
+   path; moving only `merchant.ts`/`observability.ts` would fragment it, so nothing
+   under `src/db/` was moved. This is the last structural gap and should be done as a
+   single repo-wide move once the Phase 2 schema files are filled in.
+
+**Verification:** `npm run typecheck` reports the same six errors as before this pass
+and no new ones — two are the documented merge-order `TS2305`s on `appUser` (open
+question 1), and four are pre-existing `node:fs`/`__dirname` errors in
+`test/unit/logging-rules.test.ts` because `@types/node` is not a declared
+devDependency (unrelated to M6; adding it is a `package.json` change nobody has
+approved). `npm test` 71 passed / 1 skipped, `npm run test:integration` 4 passed
+(PGlite, no `DATABASE_URL` needed). The live-LLM eval is still unmeasured — no
+`OPENAI_API_KEY` in this environment.

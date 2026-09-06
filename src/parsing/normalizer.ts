@@ -6,14 +6,14 @@ import type { NormalizedMessage } from './types';
  * merchants or guesses meaning, it only makes the mechanical extractors' regexes
  * simpler and the merchant-memory key stable.
  */
-export interface IMessageNormalizer {
+export interface MessageNormalizer {
   normalize(original: string): NormalizedMessage;
   /**
    * The merchant-memory key for a residual description: lowercase, collapsed,
    * identity-preserving punctuation stripped. Exact match only — `WOOLWORTHS 1234
    * BRISBANE` does NOT become `woolworths` here (M6 "Normalisation").
    */
-  merchantKey(description: string): string;
+  deriveMerchantKey(description: string): string;
 }
 
 /** Symbol/wording forms that mean the same thing to the extractors. */
@@ -31,7 +31,7 @@ const SYMBOL_REPLACEMENTS: readonly [RegExp, string][] = [
 /** Punctuation that carries no meaning for our purposes; kept: $ . , / - + : % ' */
 const NOISE_PUNCTUATION = /[!?;"()[\]{}<>*_~`|\\]/g;
 
-export class MessageNormalizer implements IMessageNormalizer {
+export class DefaultMessageNormalizer implements MessageNormalizer {
   normalize(original: string): NormalizedMessage {
     let text = original.normalize('NFKC').toLowerCase();
     for (const [pattern, replacement] of SYMBOL_REPLACEMENTS) text = text.replace(pattern, replacement);
@@ -47,7 +47,7 @@ export class MessageNormalizer implements IMessageNormalizer {
     return { original, text };
   }
 
-  merchantKey(description: string): string {
+  deriveMerchantKey(description: string): string {
     return description
       .normalize('NFKC')
       .toLowerCase()

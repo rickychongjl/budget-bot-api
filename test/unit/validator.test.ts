@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { MechanicalTransactionParser } from '../../src/parsing/mechanical-parser';
-import { MessageNormalizer } from '../../src/parsing/normalizer';
-import { TransactionCandidateValidator, type CandidateFields } from '../../src/parsing/validator';
+import { DefaultMechanicalTransactionParser } from '../../src/parsing/mechanical-parser';
+import { DefaultMessageNormalizer } from '../../src/parsing/normalizer';
+import { DefaultTransactionCandidateValidator, type CandidateFields } from '../../src/parsing/validator';
 import { CONTEXT, TODAY } from '../eval/fixture';
 
-const normalizer = new MessageNormalizer();
-const mechanical = new MechanicalTransactionParser(normalizer);
-const validator = new TransactionCandidateValidator(normalizer);
+const normalizer = new DefaultMessageNormalizer();
+const mechanical = new DefaultMechanicalTransactionParser(normalizer);
+const validator = new DefaultTransactionCandidateValidator(normalizer);
 const NOW = Date.parse('2026-09-06T02:00:00Z');
 
 const llmFields = (over: Partial<CandidateFields>): CandidateFields => ({

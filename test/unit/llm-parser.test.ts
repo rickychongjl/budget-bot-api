@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { LlmParseError } from '../../src/core/ports/llm-parser';
+import { LlmParseError } from '../../src/parsing/llm-parser';
 import { TestClock } from '../../src/core/testing/test-clock';
 import type { LogFields, LogLevel, Logger } from '../../src/observability/log';
-import { INSTRUCTIONS, LLM_MODEL, OpenAiLlmTransactionParser, buildPrompt } from '../../src/parsing/llm-parser';
+import { INSTRUCTIONS, LLM_MODEL, OpenAiLlmParser, buildPrompt } from '../../src/infrastructure/llm/openai-parser';
 
 /**
  * Drives the real OpenAI SDK through a fake `fetch`, so the request body we send
@@ -40,11 +40,11 @@ function harness(body: Record<string, unknown> | (() => Response)) {
     if (typeof body === 'function') return body();
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   };
-  const parser = new OpenAiLlmTransactionParser({ apiKey: API_KEY, clock, logger, fetch: fetchFn });
+  const parser = new OpenAiLlmParser({ apiKey: API_KEY, clock, logger, fetch: fetchFn });
   return { parser, requests, logger };
 }
 
-describe('OpenAiLlmTransactionParser', () => {
+describe('OpenAiLlmParser', () => {
   it('calls responses.parse with gpt-5.4-nano, effort none, and a strict JSON schema of the contract', async () => {
     const { parser, requests } = harness(responseBody());
     const result = await parser.parse('woolies 82.40', CONTEXT);

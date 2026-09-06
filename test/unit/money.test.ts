@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MoneyError, formatMinorUnits, minorUnitExponent, toMinorUnits } from '../../src/core/domain/money';
+import { MoneyError, formatMinorUnits, minorUnitExponent, toMinorUnits } from '../../src/core/shared/money';
 
 describe('toMinorUnits', () => {
   it('converts AUD decimals to cents as bigint', () => {

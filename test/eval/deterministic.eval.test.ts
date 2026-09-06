@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatMinorUnits, toMinorUnits } from '../../src/core/domain/money';
+import { formatMinorUnits, toMinorUnits } from '../../src/core/shared/money';
 import type { ParseOutcome } from '../../src/parsing/types';
 import baseline from './baseline.json';
 import { EVAL_CASES, EVAL_SET_VERSION, type EvalCase, type EvalTag } from './cases.v1';

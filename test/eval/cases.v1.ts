@@ -1,7 +1,7 @@
 import type { LocalDate } from '../../src/core/ports/common';
 import type { ParseRoute, TransactionDirection } from '../../src/core/ports/ledger-service';
-import { LlmParseError } from '../../src/core/ports/llm-parser';
-import { llmResult, type ScriptedLlmResponse } from '../../src/parsing/testing';
+import { LlmParseError } from '../../src/parsing/llm-parser';
+import { llmResult, type ScriptedLlmResponse } from '../support/scripted-llm-parser';
 import type { ClarifyReason } from '../../src/parsing/types';
 
 /**

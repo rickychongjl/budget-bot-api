@@ -1,6 +1,6 @@
 import type { CurrencyCode, LocalDate } from '../core/ports/common';
 import { addDays, daysInMonth, isValidLocalDate, splitLocalDate, toLocalDate, weekday } from './dates';
-import type { IMessageNormalizer } from './normalizer';
+import type { MessageNormalizer } from './normalizer';
 import type {
   ExtractedAmount,
   ExtractedDate,
@@ -17,7 +17,7 @@ import type {
  * `today` is passed in (derived by the pipeline from the injected `Clock` + the
  * user's timezone) — nothing here reads the wall clock.
  */
-export interface IMechanicalTransactionParser {
+export interface MechanicalTransactionParser {
   parse(normalized: NormalizedMessage, today: LocalDate): MechanicalCandidate;
 }
 
@@ -396,12 +396,12 @@ const FILLER = new Set([
   'transaction', 'purchase', 'txn', 'so', 'hey', 'hi', 'pls', 'please', 'add', 'log', 'record', 'note', 'expense', 'expenses',
 ]);
 
-function residualDescription(text: string, blanked: readonly Span[], normalizer: IMessageNormalizer): string {
+function residualDescription(text: string, blanked: readonly Span[], normalizer: MessageNormalizer): string {
   let cleaned = blankSpans(text, blanked);
   // A sign or currency symbol left dangling next to a blanked amount.
   cleaned = cleaned.replace(/(^|\s)[+\-$]+(?=\s|$)/g, ' ');
   const tokens = normalizer
-    .merchantKey(cleaned)
+    .deriveMerchantKey(cleaned)
     .split(' ')
     .filter((t) => t.length > 0);
   while (tokens.length > 0 && FILLER.has(tokens[0] ?? '')) tokens.shift();
@@ -411,8 +411,8 @@ function residualDescription(text: string, blanked: readonly Span[], normalizer:
 
 // ---------------------------------------------------------------------------
 
-export class MechanicalTransactionParser implements IMechanicalTransactionParser {
-  constructor(private readonly normalizer: IMessageNormalizer) {}
+export class DefaultMechanicalTransactionParser implements MechanicalTransactionParser {
+  constructor(private readonly normalizer: MessageNormalizer) {}
 
   parse(normalized: NormalizedMessage, today: LocalDate): MechanicalCandidate {
     const text = normalized.text;

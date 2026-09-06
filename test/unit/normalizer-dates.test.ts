@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { addDays, instantAtLocalNoon, isValidLocalDate, localDateAt, weekday } from '../../src/parsing/dates';
-import { MessageNormalizer } from '../../src/parsing/normalizer';
+import { DefaultMessageNormalizer } from '../../src/parsing/normalizer';
 
 describe('MessageNormalizer', () => {
-  const n = new MessageNormalizer();
+  const n = new DefaultMessageNormalizer();
 
   it('lowercases, trims, collapses whitespace and standardises symbols', () => {
     expect(n.normalize('  Spent   $82.40  at WOOLIES!! ').text).toBe('spent $82.40 at woolies');
@@ -18,10 +18,10 @@ describe('MessageNormalizer', () => {
     expect(n.normalize(original).original).toBe(original);
   });
 
-  it('merchantKey strips punctuation but does not merge merchants', () => {
-    expect(n.merchantKey('Woolworths 1234 BRISBANE')).toBe('woolworths 1234 brisbane');
-    expect(n.merchantKey("Macca's ☕ !")).toBe("macca's");
-    expect(n.merchantKey('7-Eleven')).toBe('7-eleven');
+  it('deriveMerchantKey strips punctuation but does not merge merchants', () => {
+    expect(n.deriveMerchantKey('Woolworths 1234 BRISBANE')).toBe('woolworths 1234 brisbane');
+    expect(n.deriveMerchantKey("Macca's ☕ !")).toBe("macca's");
+    expect(n.deriveMerchantKey('7-Eleven')).toBe('7-eleven');
   });
 });
 

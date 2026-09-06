@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { LlmParseError } from '../../src/core/ports/llm-parser';
+import { LlmParseError } from '../../src/parsing/llm-parser';
 import { SystemClock } from '../../src/core/ports/clock';
-import { OpenAiLlmTransactionParser } from '../../src/parsing/llm-parser';
+import { OpenAiLlmParser } from '../../src/infrastructure/llm/openai-parser';
 import { EVAL_CASES, EVAL_SET_VERSION } from './cases.v1';
 import { CATEGORIES } from './fixture';
 
@@ -18,7 +18,7 @@ const apiKey = process.env.OPENAI_API_KEY;
 
 describe.skipIf(!apiKey)(`M6 eval set v${EVAL_SET_VERSION} — live LLM`, () => {
   it('scores the model on the live-labelled cases', { timeout: 300_000 }, async () => {
-    const parser = new OpenAiLlmTransactionParser({ apiKey: apiKey!, clock: new SystemClock() });
+    const parser = new OpenAiLlmParser({ apiKey: apiKey!, clock: new SystemClock() });
     const cases = EVAL_CASES.filter((c) => c.live !== undefined);
     const context = { categoryNames: CATEGORIES.map((c) => c.name), currencyCode: 'AUD' };
 

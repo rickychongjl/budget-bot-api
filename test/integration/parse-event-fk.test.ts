@@ -2,14 +2,14 @@ import { PGlite } from '@electric-sql/pglite';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DrizzleMerchantMappingRepository } from '../../src/parsing/merchant-mapping-repository';
-import { DrizzleParseEventRepository } from '../../src/parsing/parse-event-repository';
+import { DrizzleMerchantMappingRepository } from '../../src/infrastructure/database/repositories/drizzle-merchant-mapping-repository';
+import { DrizzleParseEventRepository } from '../../src/infrastructure/database/repositories/drizzle-parse-event-repository';
 
 /**
  * M9 checklist 3: "Confirm `parse_event.user_id`'s `on delete set null` actually
  * fires correctly against M2's cascade delete — it's the one row that's supposed
  * to survive account deletion." Also exercises the real Drizzle repositories
- * (insert/returning, upsert, touch) against real constraints.
+ * (insert/returning, upsert, markUsed) against real constraints.
  *
  * Runs in-process on PGlite (real Postgres, WASM) so it needs no Neon branch. The
  * DDL below is what `drizzle-kit generate` produces from `src/db/schema/
@@ -105,11 +105,11 @@ describe('parse_event / merchant_category_mapping against a real Postgres (PGlit
     await expect(pg.query(`insert into parse_event (route) values ('guess')`)).rejects.toThrow(/parse_event_route_check/);
   });
 
-  it('mapping upsert keeps one row per (user, merchant), source check holds, touch bumps usage', async () => {
+  it('mapping upsert keeps one row per (user, merchant), source check holds, markUsed bumps usage', async () => {
     const rows = await db.execute(sql`insert into app_user (timezone) values ('Australia/Sydney') returning id`);
     const uid = (rows.rows[0] as { id: string }).id;
     const first = await mappings.saveConfirmed({ userId: uid, normalizedMerchant: 'coles', displayMerchant: 'Coles', categoryId: CATEGORY, source: 'user_confirmed' }, NOW);
-    await mappings.touch(first.id, NOW + 1000);
+    await mappings.markUsed(first.id, NOW + 1000);
     const second = await mappings.saveConfirmed({ userId: uid, normalizedMerchant: 'coles', displayMerchant: 'Coles Express', categoryId: CATEGORY, source: 'user_corrected' }, NOW + 2000);
     expect(second.id).toBe(first.id);
     expect(second).toMatchObject({ displayMerchant: 'Coles Express', source: 'user_corrected', timesUsed: 1 });

@@ -1,8 +1,11 @@
 import type { CurrencyCode, MinorUnits } from '../ports/common';
 
 /**
- * Pure money helpers (M1 §2). Money is `bigint` minor units everywhere; a float never
+ * Pure money helpers. Money is `bigint` minor units everywhere; a float never
  * touches a monetary value at any layer (M1 §4 / master plan §6).
+ *
+ * Lives in `core/shared` because it is a genuinely shared concept rather than one
+ * feature's calculation (CLAUDE.md, "Shared domain code").
  *
  * Implemented by M6 (the parser boundary is where decimal text becomes a domain
  * value — M3's plan, "Money"). The conversion validates scale against the currency's

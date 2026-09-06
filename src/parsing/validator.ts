@@ -1,9 +1,8 @@
-import { MoneyError, toMinorUnits } from '../core/domain/money';
 import type { CurrencyCode, Instant, LocalDate } from '../core/ports/common';
 import type { ParseRoute, TransactionDirection, ValidatedCandidate } from '../core/ports/ledger-service';
-import type { LlmParseResult } from '../core/ports/llm-parser';
+import { MoneyError, toMinorUnits } from '../core/shared/money';
 import { compareLocalDates, instantAtLocalNoon, isValidLocalDate } from './dates';
-import type { IMessageNormalizer } from './normalizer';
+import type { MessageNormalizer } from './normalizer';
 import type { CategoryRef, ClarifyReason, MechanicalCandidate, UserParseContext } from './types';
 
 /**
@@ -44,12 +43,12 @@ export interface ValidationInput {
   now: Instant;
 }
 
-export interface ITransactionCandidateValidator {
+export interface TransactionCandidateValidator {
   validate(input: ValidationInput): ValidationResult;
 }
 
-export class TransactionCandidateValidator implements ITransactionCandidateValidator {
-  constructor(private readonly normalizer: IMessageNormalizer) {}
+export class DefaultTransactionCandidateValidator implements TransactionCandidateValidator {
+  constructor(private readonly normalizer: MessageNormalizer) {}
 
   validate({ fields, mechanical, context, today, now }: ValidationInput): ValidationResult {
     // 1. Currency — no conversion in v1 (M3 "Money"): anything but the user's default clarifies.
@@ -139,7 +138,7 @@ export class TransactionCandidateValidator implements ITransactionCandidateValid
       fields.normalizedMerchant !== null && fields.normalizedMerchant.length > 0
         ? fields.normalizedMerchant
         : merchantDisplay !== undefined
-          ? this.normalizer.merchantKey(merchantDisplay)
+          ? this.normalizer.deriveMerchantKey(merchantDisplay)
           : undefined;
     const note = fields.note?.trim() || undefined;
 
@@ -166,8 +165,8 @@ export class TransactionCandidateValidator implements ITransactionCandidateValid
     }
     const name = fields.categoryName?.trim();
     if (!name) return null;
-    const key = this.normalizer.merchantKey(name);
-    return categories.find((c) => this.normalizer.merchantKey(c.name) === key) ?? null;
+    const key = this.normalizer.deriveMerchantKey(name);
+    return categories.find((c) => this.normalizer.deriveMerchantKey(c.name) === key) ?? null;
   }
 }
 

@@ -2,14 +2,14 @@ import type { Clock } from '../core/ports/clock';
 import type { Id, Instant, LocalDate, UserId } from '../core/ports/common';
 import type { DailyAllowanceService } from '../core/ports/daily-allowance-service';
 import type { LedgerService, ParseRoute, Transaction, ValidatedCandidate } from '../core/ports/ledger-service';
-import { LlmParseError, type LlmParseResult, type LlmParser, type LlmUsage } from '../core/ports/llm-parser';
 import { NoopLogger, type Logger } from '../observability/log';
 import { localDateAt } from './dates';
-import type { IMechanicalTransactionParser } from './mechanical-parser';
-import type { IMerchantMappingRepository } from './merchant-mapping-repository';
+import { LlmParseError, type LlmParseResult, type LlmParser, type LlmUsage } from './llm-parser';
+import type { MechanicalTransactionParser } from './mechanical-parser';
+import type { MerchantMappingRepository } from './merchant-mapping-repository';
 import { isMultiCategoryMerchant } from './multi-category-merchants';
-import type { IMessageNormalizer } from './normalizer';
-import type { IParseEventRepository, ParseEventCorrectionHook, ParseEventInput } from './parse-event-repository';
+import type { MessageNormalizer } from './normalizer';
+import type { ParseEventRepository, ParseEventCorrectionHook, ParseEventInput } from './parse-event-repository';
 import type {
   CategoryRef,
   ClarifyReason,
@@ -19,7 +19,7 @@ import type {
   ParseOutcome,
   UserParseContext,
 } from './types';
-import type { CandidateFields, ITransactionCandidateValidator, ValidationResult } from './validator';
+import type { CandidateFields, TransactionCandidateValidator, ValidationResult } from './validator';
 
 /**
  * The M6 orchestrator: mechanical → merchant memory → LLM (M6 "Illustrative
@@ -51,12 +51,12 @@ export const DEFAULT_POLICY: ParsingPolicy = {
 
 export interface TransactionParsingPipelineDeps {
   clock: Clock;
-  normalizer: IMessageNormalizer;
-  mechanicalParser: IMechanicalTransactionParser;
-  merchantMappings: IMerchantMappingRepository;
+  normalizer: MessageNormalizer;
+  mechanicalParser: MechanicalTransactionParser;
+  merchantMappings: MerchantMappingRepository;
   llmParser: LlmParser;
-  validator: ITransactionCandidateValidator;
-  parseEvents: IParseEventRepository;
+  validator: TransactionCandidateValidator;
+  parseEvents: ParseEventRepository;
   ledger: LedgerService;
   allowance: DailyAllowanceService;
   logger?: Logger;
@@ -65,12 +65,12 @@ export interface TransactionParsingPipelineDeps {
 
 export class TransactionParsingPipeline implements ParseEventCorrectionHook {
   private readonly clock: Clock;
-  private readonly normalizer: IMessageNormalizer;
-  private readonly mechanicalParser: IMechanicalTransactionParser;
-  private readonly merchantMappings: IMerchantMappingRepository;
+  private readonly normalizer: MessageNormalizer;
+  private readonly mechanicalParser: MechanicalTransactionParser;
+  private readonly merchantMappings: MerchantMappingRepository;
   private readonly llmParser: LlmParser;
-  private readonly validator: ITransactionCandidateValidator;
-  private readonly parseEvents: IParseEventRepository;
+  private readonly validator: TransactionCandidateValidator;
+  private readonly parseEvents: ParseEventRepository;
   private readonly ledger: LedgerService;
   private readonly allowance: DailyAllowanceService;
   private readonly logger: Logger;
@@ -144,7 +144,7 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
     proposal: MappingProposal,
     source: MerchantMappingSource,
   ): Promise<{ saved: true } | { saved: false; reason: 'multi_category_merchant' | 'empty_key' }> {
-    const key = this.normalizer.merchantKey(proposal.normalizedMerchant);
+    const key = this.normalizer.deriveMerchantKey(proposal.normalizedMerchant);
     if (key.length === 0) return { saved: false, reason: 'empty_key' };
     if (isMultiCategoryMerchant(key) || isMultiCategoryMerchant(proposal.displayMerchant)) {
       return { saved: false, reason: 'multi_category_merchant' };
@@ -183,11 +183,11 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
   /** @internal */
   get deps(): {
     clock: Clock;
-    normalizer: IMessageNormalizer;
-    merchantMappings: IMerchantMappingRepository;
+    normalizer: MessageNormalizer;
+    merchantMappings: MerchantMappingRepository;
     llmParser: LlmParser;
-    validator: ITransactionCandidateValidator;
-    parseEvents: IParseEventRepository;
+    validator: TransactionCandidateValidator;
+    parseEvents: ParseEventRepository;
     logger: Logger;
     policy: ParsingPolicy;
   } {
@@ -243,7 +243,7 @@ class ParseRun {
       route: 'mapping',
     });
     if (outcome.kind === 'recorded') {
-      await this.pipeline.deps.merchantMappings.touch(mappingId, this.now);
+      await this.pipeline.deps.merchantMappings.markUsed(mappingId, this.now);
     }
     return outcome;
   }

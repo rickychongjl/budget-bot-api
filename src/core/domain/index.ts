@@ -4,7 +4,9 @@
  * unit-testable at arbitrary instants and across DST transitions.
  *
  * All stubs this pass; M3/M4/M5 fill them in.
+ *
+ * `money.ts` moved to `core/shared/` — it is genuinely shared, not feature-specific
+ * (CLAUDE.md, "Shared domain code"). Import it from `../shared/money`.
  */
-export * from './money';
 export * from './period';
 export * from './allowance';
