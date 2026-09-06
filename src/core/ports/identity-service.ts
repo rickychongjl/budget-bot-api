@@ -12,6 +12,12 @@ export interface ResolvedUser {
   userId: UserId;
   /** True when `register` created the row rather than finding an existing one. */
   isNew: boolean;
+  /**
+   * True once all 5 onboarding steps are complete. M7 uses this to route free text to
+   * the onboarding machine instead of M6 (`ONBOARDING_REQUIRED` for everything else)
+   * without a second round-trip. Added by M2 alongside M1's `isNew`.
+   */
+  onboarded: boolean;
 }
 
 /**
