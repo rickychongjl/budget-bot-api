@@ -24,8 +24,8 @@ import type { OnboardingStep } from './repository';
  *   1. timezone     curated AU buttons + IANA search      -> IdentityService.setInitialTimezone
  *   2. currency     default AUD, one tap                   -> IdentityService.updateSettings
  *   3. anchor_date  the monthly "budget start date"        -> IdentityService.updateSettings
- *   4. categories   "Food" pre-seeded; add up to tier cap  -> M8 assertAllowed, M3 create, M4 setCap
- *   5. reminders    pick 1 (Free) / up to 5 (Premium)      -> M8 assertAllowed, M5 enable
+ *   4. categories   at least 1 category + 1 cap             -> M8 assertAllowed, M3 create, M4 setCap
+ *   5. reminders    optional; up to 1 Free / 5 Premium      -> M8 assertAllowed, M5 enable
  *
  * Transport-neutral: M7 turns `OnboardingPrompt.options` into inline buttons whose
  * callback data carries `{ step, value }`, and forwards free text as `{ value }`. All
@@ -217,12 +217,44 @@ export class OnboardingService {
     const lower = value.toLowerCase();
 
     if (lower === DONE) {
-      const categories = await this.deps.categories.list(userId);
+      const [categories, budgets] = await Promise.all([
+        this.deps.categories.list(userId),
+        this.deps.budgets.activeBudgets(userId),
+      ]);
       if (categories.length === 0) {
         throw new RefusalError('INVALID_ARGUMENT', 'Add at least one category before moving on — for example "Food 600".');
       }
+      const categoryIds = new Set(categories.map((category) => category.id));
+      const hasCategoryBudget = budgets.some(
+        (budget) => budget.isActive && budget.categoryId !== null && categoryIds.has(budget.categoryId),
+      );
+      if (!hasCategoryBudget) {
+        throw new RefusalError(
+          'INVALID_ARGUMENT',
+          'Set a monthly budget for at least one category before moving on — for example "Food 600".',
+        );
+      }
       await this.deps.identity.setOnboardingStep(userId, 'reminders');
       return { kind: 'prompt', prompt: await this.promptFor(userId, 'reminders') };
+    }
+
+    if (lower.startsWith('rename ')) {
+      const rename = parseRename(value);
+      if (!rename) {
+        throw new RefusalError('INVALID_ARGUMENT', 'Rename a category with "rename Old name to New name".');
+      }
+      if (rename.newName.length > MAX_CATEGORY_NAME) {
+        throw new RefusalError('INVALID_ARGUMENT', `Category names are limited to ${MAX_CATEGORY_NAME} characters.`);
+      }
+      const target = await this.findCategory(userId, rename.currentName);
+      if (!target) {
+        throw new RefusalError(
+          'CATEGORY_NOT_FOUND',
+          `You don't have a category called "${escapeForPrompt(rename.currentName)}".`,
+        );
+      }
+      await this.deps.categories.rename(userId, target.id, rename.newName);
+      return { kind: 'prompt', prompt: await this.promptFor(userId, 'categories') };
     }
 
     if (lower.startsWith('remove ')) {
@@ -273,9 +305,6 @@ export class OnboardingService {
     const enabled = await this.deps.reminders.enabledCategoryIds(userId);
 
     if (value.toLowerCase() === DONE) {
-      if (enabled.length === 0) {
-        throw new RefusalError('INVALID_ARGUMENT', 'Pick at least one category for the daily reminder.');
-      }
       return this.complete(userId);
     }
 
@@ -321,7 +350,10 @@ export class OnboardingService {
         };
       case 'anchor_date': {
         const user = await this.deps.identity.userRecord(userId);
-        const today = localDateAt(this.deps.clock.now(), user.timezone ?? 'UTC');
+        if (user.timezone === '') {
+          throw new RefusalError('ONBOARDING_REQUIRED', 'Choose a timezone before setting your budget start date.');
+        }
+        const today = localDateAt(this.deps.clock.now(), user.timezone);
         const [year, month] = today.split('-') as [string, string, string];
         const firstOfThisMonth = `${year}-${month}-01`;
         const firstOfNextMonth = addOneMonth(year, month);
@@ -354,8 +386,9 @@ export class OnboardingService {
             `Now your categories — I've started you off with ${STARTER_CATEGORY}:\n${lines.join('\n')}\n\n` +
             `Add one by sending its name with an optional monthly cap in ${settings.currencyCode}, ` +
             `e.g. "Groceries 500" or just "Fun". Send "${STARTER_CATEGORY} 600" to cap ${STARTER_CATEGORY}, ` +
-            `or "remove ${STARTER_CATEGORY}" to drop it. You can have up to ${CATEGORY_LIMIT[tier]} categories. ` +
-            `Tap Done when you're finished.`,
+            `"rename ${STARTER_CATEGORY} to Groceries" to rename it, or "remove ${STARTER_CATEGORY}" to drop it. ` +
+            `You can have up to ${CATEGORY_LIMIT[tier]} categories. At least one category must have a monthly budget ` +
+            `before you tap Done.`,
           options: [{ label: 'Done', value: DONE }],
         };
       }
@@ -370,15 +403,15 @@ export class OnboardingService {
         const chosen = categories.filter((c) => enabled.includes(c.id)).map((c) => c.name);
         const intro =
           chosen.length === 0
-            ? `Last step: which category should get your daily 07:00 reminder? ` +
-              (limit === 1 ? 'On the free plan you can pick 1.' : `You can pick up to ${limit}.`)
+            ? `Last step: optionally choose a category for a daily 07:00 reminder, or tap Done to skip. ` +
+              (limit === 1 ? 'On the free plan you can pick up to 1.' : `You can pick up to ${limit}.`)
             : `Reminder on: ${chosen.join(', ')}. Pick another (up to ${limit}), or tap Done.`;
         return {
           step,
           text: intro,
           options: [
             ...remaining.map((c) => ({ label: c.name, value: c.id })),
-            ...(chosen.length > 0 ? [{ label: 'Done', value: DONE }] : []),
+            { label: 'Done', value: DONE },
           ],
         };
       }
@@ -499,6 +532,14 @@ function splitNameAndAmount(value: string): { name: string; amount: string | nul
     return { name: tokens.slice(0, -1).join(' '), amount: last.replace(/^\$/, '').replace(',', '.') };
   }
   return { name: tokens.join(' '), amount: null };
+}
+
+function parseRename(value: string): { currentName: string; newName: string } | null {
+  const match = /^rename\s+(.+?)\s+to\s+(.+)$/i.exec(value);
+  if (!match) return null;
+  const currentName = match[1]?.trim() ?? '';
+  const newName = match[2]?.trim() ?? '';
+  return currentName === '' || newName === '' ? null : { currentName, newName };
 }
 
 /** Mirrors the intent of M3's `normalized_name`: case- and whitespace-insensitive. */

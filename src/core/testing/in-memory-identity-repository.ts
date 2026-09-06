@@ -14,7 +14,7 @@ import type { ChannelConnection } from '../ports/messaging';
  *
  * It reproduces the two DB guarantees the service relies on — the
  * `(channel, external_id)` unique constraint and the conditional
- * `timezone is null` update — as *synchronous* checks at the moment of the write, so
+ * `timezone = ''` update — as *synchronous* checks at the moment of the write, so
  * concurrent `register`/`setInitialTimezone` calls interleaved across `await`s behave
  * like they do against Postgres. It also cascades deletes. It does not enforce check
  * constraints; that is what the integration tier is for.
@@ -45,7 +45,7 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     // Simulate the transaction: speculative user row, then the constrained insert.
     const speculative: AppUserRecord = {
       id: this.nextId('user'),
-      timezone: null,
+      timezone: '',
       currencyCode: 'AUD',
       periodAnchorDate: null,
       reminderLocalTime: '07:00',
@@ -89,7 +89,7 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     await tick();
     const user = this.users.get(userId);
     if (!user) return 'missing';
-    if (user.timezone !== null) return 'already_set';
+    if (user.timezone !== '') return 'already_set';
     this.users.set(userId, { ...user, timezone, updatedAt: now });
     return 'set';
   }

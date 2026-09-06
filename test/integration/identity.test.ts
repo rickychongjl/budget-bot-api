@@ -9,7 +9,7 @@ import { FakeLedger } from '../unit/identity/fakes';
 
 /**
  * M2 integration tier — the cases whose guarantees come from Postgres itself (the
- * `(channel, external_id)` unique constraint, the conditional `timezone is null`
+ * `(channel, external_id)` unique constraint, the conditional `timezone = ''`
  * update, `on delete cascade`, the check constraints). A mock can't prove these.
  *
  * Needs `DATABASE_URL` pointing at a branch with the committed migrations applied
@@ -37,7 +37,11 @@ run('M2 identity (real Postgres)', () => {
 
   beforeAll(() => {
     db = createDatabase(url as string);
-    identity = new IdentityServiceImpl(new DrizzleIdentityRepository(db), new TestClock('2026-09-06T00:00:00Z'), new FakeLedger());
+    identity = new IdentityServiceImpl({
+      repo: new DrizzleIdentityRepository(db),
+      clock: new TestClock('2026-09-06T00:00:00Z'),
+      ledger: new FakeLedger(),
+    });
   });
 
   afterEach(async () => {
@@ -100,6 +104,16 @@ run('M2 identity (real Postgres)', () => {
       periodAnchorDate: '2026-09-15',
       reminderLocalTime: '08:30',
     });
+  });
+
+  it('stores a non-null pre-onboarding timezone but never exposes it as settings', async () => {
+    const id = ext('required-timezone');
+    const { userId } = await identity.register('telegram', id, id);
+    const [row] = (await db.execute(
+      sql`select timezone from app_user where id = ${userId}`,
+    )) as unknown as [{ timezone: string }];
+    expect(row?.timezone).toBe('');
+    await expect(identity.getSettings(userId)).rejects.toMatchObject({ code: 'ONBOARDING_REQUIRED' });
   });
 
   it('check constraints reject a bad channel and a bad status at the DB', async () => {

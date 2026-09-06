@@ -9,18 +9,19 @@
  *
  * Wiring (M7 does this):
  *   const repo = new DrizzleIdentityRepository(db);
- *   const identity = new IdentityServiceImpl(repo, clock, ledger);
+ *   const identity = new IdentityServiceImpl({ repo, clock, ledger });
  *   const onboarding = new OnboardingService({ identity, entitlements, categories, budgets, reminders, clock });
  */
 export type {
   AppUserPatch,
   AppUserRecord,
   IdentityRepository,
-  OnboardingStep,
   RegisterOutcome,
   SetTimezoneOutcome,
   UserStatus,
 } from './repository';
+export { ONBOARDING_STEPS } from './onboarding-step';
+export type { OnboardingStep } from './onboarding-step';
 export { DrizzleIdentityRepository } from './drizzle-repository';
 export { IdentityServiceImpl, normaliseCurrency } from './identity-service';
 export type { OnboardingStateStore } from './identity-service';

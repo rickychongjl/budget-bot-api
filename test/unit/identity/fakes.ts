@@ -133,6 +133,23 @@ export class FakeCategories implements CategoryService {
     return row;
   }
 
+  async rename(userId: UserId, categoryId: Id, name: string): Promise<Category> {
+    const row = this.rows.find((category) => category.userId === userId && category.id === categoryId);
+    if (!row) throw new RefusalError('CATEGORY_NOT_FOUND');
+    const normalizedName = name.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (
+      this.rows.some(
+        (category) =>
+          category.userId === userId && category.id !== categoryId && category.normalizedName === normalizedName,
+      )
+    ) {
+      throw new RefusalError('INVALID_ARGUMENT', `duplicate category ${name}`);
+    }
+    row.name = name.trim();
+    row.normalizedName = normalizedName;
+    return row;
+  }
+
   async archive(userId: UserId, categoryId: Id): Promise<void> {
     const row = this.rows.find((c) => c.userId === userId && c.id === categoryId);
     if (!row) throw new RefusalError('CATEGORY_NOT_FOUND');

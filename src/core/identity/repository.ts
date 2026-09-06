@@ -1,6 +1,8 @@
-import type { ONBOARDING_STEPS } from '../../db/schema/identity';
 import type { Channel, CurrencyCode, Instant, LocalDate, LocalTime, UserId } from '../ports/common';
 import type { ChannelConnection } from '../ports/messaging';
+import type { OnboardingStep } from './onboarding-step';
+
+export type { OnboardingStep } from './onboarding-step';
 
 /**
  * The persistence seam for M2. `IdentityServiceImpl` and `OnboardingService` talk to
@@ -14,13 +16,12 @@ import type { ChannelConnection } from '../ports/messaging';
  *   - `setTimezoneIfUnset` — timezone is written at most once.
  */
 
-export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
 export type UserStatus = 'active' | 'suspended' | 'deleted';
 
 export interface AppUserRecord {
   id: UserId;
-  /** Null until onboarding step 1 completes; immutable afterwards. */
-  timezone: string | null;
+  /** Empty only before onboarding step 1 completes; a non-empty IANA zone is immutable. */
+  timezone: string;
   currencyCode: CurrencyCode;
   periodAnchorDate: LocalDate | null;
   /** `HH:MM`. */
@@ -48,9 +49,9 @@ export interface ConnectionLookup {
 }
 
 export type SetTimezoneOutcome =
-  /** The column was null and is now `timezone`. */
+  /** The empty pre-onboarding value is now `timezone`. */
   | 'set'
-  /** The column was already non-null; the caller decides whether the value matches (idempotent replay). */
+  /** The column was already non-empty; the caller decides whether the value matches (idempotent replay). */
   | 'already_set'
   | 'missing';
 
@@ -73,7 +74,7 @@ export interface IdentityRepository {
 
   findUser(userId: UserId): Promise<AppUserRecord | null>;
 
-  /** `update app_user set timezone = $1 where id = $2 and timezone is null` — the DB arbitrates. */
+  /** `update app_user set timezone = $1 where id = $2 and timezone = ''` — the DB arbitrates. */
   setTimezoneIfUnset(userId: UserId, timezone: string, now: Instant): Promise<SetTimezoneOutcome>;
 
   updateUser(userId: UserId, patch: AppUserPatch, now: Instant): Promise<AppUserRecord | null>;

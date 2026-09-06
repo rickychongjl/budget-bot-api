@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { TransactionRollbackError } from 'drizzle-orm/errors';
 import type { Database } from '../../db/client';
 import { appUser, channelConnection } from '../../db/schema/identity';
@@ -25,7 +25,7 @@ import type {
  *     second insert means somebody else won — roll back (so the speculative
  *     `app_user` never survives) and read the winner. Two concurrent first-`/start`s
  *     serialise on the unique index.
- *   - `setTimezoneIfUnset`: `update … where timezone is null` — at most one caller
+ *   - `setTimezoneIfUnset`: `update … where timezone = ''` — at most one caller
  *     ever sees a row updated.
  */
 export class DrizzleIdentityRepository implements IdentityRepository {
@@ -53,13 +53,18 @@ export class DrizzleIdentityRepository implements IdentityRepository {
       .transaction(async (tx): Promise<RegisterOutcome> => {
         const [user] = await tx
           .insert(appUser)
-          .values({ onboardingStep: 'timezone' })
+          .values({
+            timezone: '',
+            onboardingStep: 'timezone',
+            createdAt: new Date(now),
+            updatedAt: new Date(now),
+          })
           .returning({ id: appUser.id, onboardingStep: appUser.onboardingStep });
         if (!user) throw new Error('app_user insert returned no row');
 
         const linked = await tx
           .insert(channelConnection)
-          .values({ userId: user.id, channel, externalId, chatId, username })
+          .values({ userId: user.id, channel, externalId, chatId, username, linkedAt: new Date(now) })
           .onConflictDoNothing({ target: [channelConnection.channel, channelConnection.externalId] })
           .returning({ userId: channelConnection.userId });
 
@@ -98,7 +103,7 @@ export class DrizzleIdentityRepository implements IdentityRepository {
     const updated = await this.db
       .update(appUser)
       .set({ timezone, updatedAt: new Date(now) })
-      .where(and(eq(appUser.id, userId), isNull(appUser.timezone)))
+      .where(and(eq(appUser.id, userId), eq(appUser.timezone, '')))
       .returning({ id: appUser.id });
     if (updated.length === 1) return 'set';
     const exists = await this.db.select({ id: appUser.id }).from(appUser).where(eq(appUser.id, userId)).limit(1);

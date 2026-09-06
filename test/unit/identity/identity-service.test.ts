@@ -21,7 +21,7 @@ beforeEach(() => {
   repo = new InMemoryIdentityRepository();
   clock = new TestClock('2026-09-06T00:00:00.000Z');
   ledger = new FakeLedger();
-  identity = new IdentityServiceImpl(repo, clock, ledger);
+  identity = new IdentityServiceImpl({ repo, clock, ledger });
 });
 
 async function onboardedUser(timezone = 'Australia/Sydney') {
@@ -61,6 +61,15 @@ describe('register / resolve', () => {
     const a = await identity.register('telegram', '1', '1');
     const b = await identity.register('telegram', '2', '2');
     expect(a.userId).not.toBe(b.userId);
+  });
+
+  it('uses the injected clock for initial user and connection timestamps', async () => {
+    const now = clock.now();
+    const { userId } = await identity.register('telegram', 'clocked', 'clocked');
+    const user = await repo.findUser(userId);
+    const connection = await identity.activeConnection(userId, 'telegram');
+    expect(user).toMatchObject({ createdAt: now, updatedAt: now });
+    expect(connection?.linkedAt).toBe(now);
   });
 
   it('resolve returns null for an unknown id', async () => {
@@ -135,7 +144,7 @@ describe('timezone immutability', () => {
     await expect(identity.setInitialTimezone(userId, 'Mars/Olympus_Mons')).rejects.toMatchObject({
       code: 'INVALID_ARGUMENT',
     });
-    expect((await repo.findUser(userId))?.timezone).toBeNull();
+    expect((await repo.findUser(userId))?.timezone).toBe('');
   });
 });
 
@@ -239,6 +248,15 @@ describe('updateSettings — anchor date and reminder time', () => {
     clock.advance(60_000);
     await identity.updateSettings(userId, {});
     expect((await repo.findUser(userId))?.updatedAt).toBe(before);
+  });
+
+  it('rejects unknown setting keys from JavaScript or forged callers', async () => {
+    const userId = await onboardedUser();
+    const forged = { locale: 'en-AU' } as unknown as Parameters<typeof identity.updateSettings>[1];
+    await expect(identity.updateSettings(userId, forged)).rejects.toMatchObject({
+      code: 'INVALID_ARGUMENT',
+      message: expect.stringContaining('locale'),
+    });
   });
 
   it('is ONBOARDING_REQUIRED before a timezone exists', async () => {

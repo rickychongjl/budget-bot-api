@@ -8,6 +8,16 @@ import type { LedgerService } from '../ports/ledger-service';
 import type { ChannelConnection } from '../ports/messaging';
 import type { AppUserRecord, IdentityRepository, OnboardingStep } from './repository';
 
+/** The only keys accepted by `updateSettings`; timezone has its own set-once path. */
+const MUTABLE_SETTING_KEYS = new Set(['currencyCode', 'periodAnchorDate', 'reminderLocalTime']);
+
+export interface IdentityServiceDeps {
+  repo: IdentityRepository;
+  clock: Clock;
+  /** M3 is injected narrowly: M2 only needs to ask whether history contains one row. */
+  ledger: Pick<LedgerService, 'history'>;
+}
+
 /**
  * The step marker the `/start` machine reads and advances. Implemented by
  * `IdentityServiceImpl` and consumed by `OnboardingService`; not a cross-module port.
@@ -34,11 +44,15 @@ export interface OnboardingStateStore {
  * `exportAccount` is deferred (master plan §5.8) and throws `NOT_YET_AVAILABLE`.
  */
 export class IdentityServiceImpl implements IdentityService, ChannelConnectionDirectory, OnboardingStateStore {
-  constructor(
-    private readonly repo: IdentityRepository,
-    private readonly clock: Clock,
-    private readonly ledger: LedgerService,
-  ) {}
+  private readonly repo: IdentityRepository;
+  private readonly clock: Clock;
+  private readonly ledger: Pick<LedgerService, 'history'>;
+
+  constructor(deps: IdentityServiceDeps) {
+    this.repo = deps.repo;
+    this.clock = deps.clock;
+    this.ledger = deps.ledger;
+  }
 
   // ---- resolution ----------------------------------------------------------------
 
@@ -65,7 +79,7 @@ export class IdentityServiceImpl implements IdentityService, ChannelConnectionDi
 
   async getSettings(userId: UserId): Promise<UserSettings> {
     const user = await this.userRecord(userId);
-    if (user.timezone === null) {
+    if (user.timezone === '') {
       throw new RefusalError('ONBOARDING_REQUIRED', 'Finish /start first — a timezone has not been chosen yet.');
     }
     return toSettings(user, user.timezone);
@@ -89,13 +103,19 @@ export class IdentityServiceImpl implements IdentityService, ChannelConnectionDi
   async updateSettings(userId: UserId, patch: Partial<Omit<UserSettings, 'timezone'>>): Promise<UserSettings> {
     // The type already excludes `timezone`; this catches a forged/JS caller that sends
     // it anyway — refused even if the value equals what is stored (M2 tests).
-    if ('timezone' in (patch as Record<string, unknown>)) {
+    const raw = patch as Record<string, unknown>;
+    if ('timezone' in raw) {
       const user = await this.userRecord(userId);
       throw timezoneImmutable(user.timezone);
     }
+    for (const key of Object.keys(raw)) {
+      if (!MUTABLE_SETTING_KEYS.has(key)) {
+        throw new RefusalError('INVALID_ARGUMENT', `Unknown setting ${JSON.stringify(key)}.`);
+      }
+    }
 
     const user = await this.userRecord(userId);
-    if (user.timezone === null) {
+    if (user.timezone === '') {
       throw new RefusalError('ONBOARDING_REQUIRED', 'Choose a timezone (step 1 of /start) before changing other settings.');
     }
 
@@ -138,7 +158,7 @@ export class IdentityServiceImpl implements IdentityService, ChannelConnectionDi
 
     if (Object.keys(next).length === 0) return toSettings(user, user.timezone);
     const updated = await this.repo.updateUser(userId, next, this.clock.now());
-    if (!updated || updated.timezone === null) throw new RefusalError('RESOURCE_NOT_FOUND', 'No such user.');
+    if (!updated) throw new RefusalError('RESOURCE_NOT_FOUND', 'No such user.');
     return toSettings(updated, updated.timezone);
   }
 
@@ -199,7 +219,7 @@ function toSettings(user: AppUserRecord, timezone: string): UserSettings {
   };
 }
 
-function timezoneImmutable(current: string | null): RefusalError {
+function timezoneImmutable(current: string): RefusalError {
   return new RefusalError(
     'TIMEZONE_IMMUTABLE',
     current

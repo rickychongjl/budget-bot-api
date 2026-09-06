@@ -18,7 +18,7 @@
  *   Clock                  M1   injectable time source
  *
  * Added in Phase 1 by M2 (each file's header says why; build-log has the full note):
- *   CategoryService              M3-owned  category create/list/archive — absent from LedgerService
+ *   CategoryService              M3-owned  category create/list/rename/archive — absent from LedgerService
  *   ReminderSelectionService     M5-owned  which categories carry the 07:00 reminder
  *   ChannelConnectionDirectory   M2-owned  fetch/deactivate a connection (M7's 403 path)
  */

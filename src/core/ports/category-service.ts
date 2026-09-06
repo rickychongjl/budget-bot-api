@@ -34,6 +34,9 @@ export interface CategoryService {
    */
   create(userId: UserId, name: string): Promise<Category>;
 
+  /** Rename an existing category after applying M3's normalization and duplicate-name rules. */
+  rename(userId: UserId, categoryId: Id, name: string): Promise<Category>;
+
   /**
    * Archive — gated on "no transactions in the current period" (master plan §5.1).
    * During onboarding there are no transactions, so this is how a user drops the
