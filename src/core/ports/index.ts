@@ -11,7 +11,7 @@
  *   LedgerService          M3   docs/M3-categories-ledger.md
  *   BudgetService          M4   docs/M4-budgets-periods.md
  *   DailyAllowanceService  M5   docs/M5-daily-allowance-scheduler.md (per-category revision)
- *   EntitlementService     M8   docs/M8-entitlements-limits.md
+ *   EntitlementService     M8   now owned by its module: core/entitlements/entitlement-service.ts
  *   MessageSender /        M7   docs/M7-telegram-gateway.md
  *     InboundMessage
  *   LlmParser              M6   provider-neutral, privacy-constrained
@@ -23,6 +23,5 @@ export * from './identity-service';
 export * from './ledger-service';
 export * from './budget-service';
 export * from './daily-allowance-service';
-export * from './entitlement-service';
 export * from './messaging';
 export * from './llm-parser';

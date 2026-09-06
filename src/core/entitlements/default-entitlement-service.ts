@@ -7,7 +7,7 @@ import {
   type DowngradeEligibility,
   type EntitlementService,
   type GatedAction,
-} from '../ports/entitlement-service';
+} from './entitlement-service';
 import { DEFAULT_LIMITS, MINUTE_MS, type EntitlementLimits, type TierLimits } from './limits';
 import { formatLocalTime, localDateOf, nextLocalMidnight } from './local-time';
 import {
@@ -22,14 +22,14 @@ import {
 import type {
   CapacityReader,
   EntitlementReads,
+  EntitlementRepository,
   EntitlementRow,
-  EntitlementStore,
-  EntitlementTx,
+  EntitlementTransaction,
   TimezoneReader,
-} from './ports';
+} from './entitlement-repository';
 
 export interface EntitlementServiceDeps<X> {
-  store: EntitlementStore<X>;
+  repository: EntitlementRepository<X>;
   capacity: CapacityReader<X>;
   /** M2's immutable timezone for the user — anchors the daily reset. */
   timezoneOf: TimezoneReader;
@@ -41,22 +41,22 @@ export interface EntitlementServiceDeps<X> {
 
 /**
  * `EntitlementService` — the policy, independent of storage. Every decision is made
- * inside one store transaction under a per-user lock, so "check then record" is one
- * atomic step (M8 invariants: exactly-once admission; a refusal never consumes a
+ * inside one repository transaction under a per-user lock, so "check then record" is
+ * one atomic step (M8 invariants: exactly-once admission; a refusal never consumes a
  * slot; capacity checks atomic with the write they gate).
  *
- * `X` is the executor type of the store (Drizzle transaction handle in production,
+ * `X` is the executor type of the repository (Drizzle transaction handle in production,
  * an arbitrary test "world" in memory) — see `gate` for why callers care.
  */
-export class EntitlementServiceImpl<X> implements EntitlementService {
-  private readonly store: EntitlementStore<X>;
+export class DefaultEntitlementService<X> implements EntitlementService {
+  private readonly repository: EntitlementRepository<X>;
   private readonly capacity: CapacityReader<X>;
   private readonly timezoneOf: TimezoneReader;
   private readonly clock: Clock;
   private readonly limits: EntitlementLimits;
 
   constructor(deps: EntitlementServiceDeps<X>) {
-    this.store = deps.store;
+    this.repository = deps.repository;
     this.capacity = deps.capacity;
     this.timezoneOf = deps.timezoneOf;
     this.clock = deps.clock;
@@ -67,7 +67,7 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
 
   /** Re-read on every call; honours `status` *and* `current_period_end`. Never cached. */
   async tierOf(userId: UserId): Promise<Tier> {
-    return this.resolveTier(await this.store.activeEntitlement(userId));
+    return this.resolveTier(await this.repository.findActiveEntitlement(userId));
   }
 
   private resolveTier(row: EntitlementRow | null): Tier {
@@ -77,7 +77,7 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
   }
 
   private async tierIn(reads: EntitlementReads, userId: UserId): Promise<Tier> {
-    return this.resolveTier(await reads.activeEntitlement(userId));
+    return this.resolveTier(await reads.findActiveEntitlement(userId));
   }
 
   // ---- message admission --------------------------------------------------------
@@ -94,7 +94,7 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
     const timeZone = await this.timezoneOf(userId);
     const { fairUse } = this.limits;
 
-    return this.store.transaction(async (tx) => {
+    return this.repository.runInTransaction(async (tx) => {
       await tx.lockUser(userId, 'admission');
 
       if (await tx.hasUsage(userId, messageId)) return { outcome: 'duplicate' };
@@ -105,7 +105,7 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
 
       // Rolling window: events with admittedAt > receivedAt - windowMs count; one exactly
       // windowMs old has left. Not a wall-clock bucket.
-      const window = await tx.usageInWindow(userId, receivedAt - fairUse.windowMs);
+      const window = await tx.getUsageInWindow(userId, receivedAt - fairUse.windowMs);
       const fairUseRetryAt: Instant | null =
         window.count >= fairUse.maxMessages && window.earliest !== null
           ? window.earliest + fairUse.windowMs
@@ -113,7 +113,7 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
 
       let dailyRetryAt: Instant | null = null;
       if (tierLimits.dailyMessages !== null) {
-        const used = await tx.usageOnLocalDate(userId, localDate);
+        const used = await tx.countUsageOnLocalDate(userId, localDate);
         if (used >= tierLimits.dailyMessages) dailyRetryAt = nextLocalMidnight(receivedAt, timeZone);
       }
 
@@ -121,7 +121,7 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
         return this.refusal({ receivedAt, timeZone, tierLimits, fairUseRetryAt, dailyRetryAt });
       }
 
-      await tx.insertUsage({ userId, messageId, admittedAt: receivedAt, localDate });
+      await tx.recordUsage({ userId, messageId, admittedAt: receivedAt, localDate });
       return { outcome: 'admitted' };
     });
   }
@@ -192,14 +192,14 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
    * this with their own insert/update as `write(executor)`.
    */
   async gate<T>(userId: UserId, action: GatedAction, write: (executor: X) => Promise<T>): Promise<T> {
-    return this.store.transaction(async (tx) => {
+    return this.repository.runInTransaction(async (tx) => {
       await tx.lockUser(userId, 'capacity');
       await this.check(tx, userId, action);
       return write(tx.executor);
     });
   }
 
-  private async check(tx: EntitlementTx<X>, userId: UserId, action: GatedAction): Promise<void> {
+  private async check(tx: EntitlementTransaction<X>, userId: UserId, action: GatedAction): Promise<void> {
     const tier = await this.tierIn(tx, userId);
     const limits = this.limits.tiers[tier];
     const premium = this.limits.tiers.premium;
@@ -207,7 +207,7 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
     switch (action.kind) {
       case 'create_category':
       case 'reactivate_category': {
-        const current = await this.capacity.activeCategoryCount(userId, tx.executor);
+        const current = await this.capacity.countActiveCategories(userId, tx.executor);
         if (current >= limits.categories) {
           throw new EntitlementRefusal(
             'CATEGORY_LIMIT',
@@ -217,7 +217,7 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
         return;
       }
       case 'enable_reminder': {
-        const current = await this.capacity.reminderCategoryCount(userId, tx.executor);
+        const current = await this.capacity.countReminderCategories(userId, tx.executor);
         if (current >= limits.reminderCategories) {
           throw new EntitlementRefusal(
             'REMINDER_CATEGORY_LIMIT',
@@ -244,18 +244,18 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
 
   /** Reports what must go before Free's limits fit. Removes nothing — that's M3/M5's job. */
   async assessDowngrade(userId: UserId): Promise<DowngradeEligibility> {
-    return this.store.transaction(async (tx) => {
+    return this.repository.runInTransaction(async (tx) => {
       await tx.lockUser(userId, 'capacity');
       return this.assess(tx, userId, await this.tierIn(tx, userId));
     });
   }
 
-  private async assess(tx: EntitlementTx<X>, userId: UserId, tier: Tier): Promise<DowngradeEligibility> {
+  private async assess(tx: EntitlementTransaction<X>, userId: UserId, tier: Tier): Promise<DowngradeEligibility> {
     const free = this.limits.tiers.free;
     const limits: CapacityCounts = { categories: free.categories, reminderCategories: free.reminderCategories };
     const current: CapacityCounts = {
-      categories: await this.capacity.activeCategoryCount(userId, tx.executor),
-      reminderCategories: await this.capacity.reminderCategoryCount(userId, tx.executor),
+      categories: await this.capacity.countActiveCategories(userId, tx.executor),
+      reminderCategories: await this.capacity.countReminderCategories(userId, tx.executor),
     };
     const mustRemove: CapacityCounts = {
       categories: Math.max(0, current.categories - limits.categories),
@@ -273,6 +273,6 @@ export class EntitlementServiceImpl<X> implements EntitlementService {
   }
 }
 
-export function createEntitlementService<X>(deps: EntitlementServiceDeps<X>): EntitlementServiceImpl<X> {
-  return new EntitlementServiceImpl(deps);
+export function createEntitlementService<X>(deps: EntitlementServiceDeps<X>): DefaultEntitlementService<X> {
+  return new DefaultEntitlementService(deps);
 }

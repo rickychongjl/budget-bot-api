@@ -243,3 +243,73 @@ question it hit. Read between PR reviews (master plan §7). Newest last.
    admission gate"), that's `admitMessage` with the callback's stable id — no new
    kind needed, but M7 should confirm its id scheme distinguishes callback ids from
    message ids.
+
+### CLAUDE.md convention pass — 2026-09-06 (follow-up commit on the same branch)
+
+`CLAUDE.md` landed on `phase-1` after the M8 implementation commit. This branch was
+merged with it and the entitlements module *only* was brought in line. No behaviour
+changed: same 53 unit tests, same assertions, `npm run typecheck` clean.
+
+**Moved / renamed (module scope only):**
+
+- `src/core/ports/entitlement-service.ts` → `src/core/entitlements/entitlement-service.ts`
+  — a module-owned contract belongs in its feature folder, not the global `core/ports`
+  dumping ground. `src/core/ports/index.ts` drops that one re-export line; the other
+  modules' stubs there are untouched (they move with their own PRs).
+- The Phase 2 billing port (`StarsBillingService` / `StarsPaymentEvent` /
+  `BillingOutcome`) moved from that same file into `core/entitlements/billing.ts`,
+  where its only implementation (`NotConfiguredStarsBilling`) already lived.
+- `core/entitlements/ports.ts` → `core/entitlements/entitlement-repository.ts` (the
+  outgoing port), with `EntitlementStore` → `EntitlementRepository` and
+  `EntitlementTx` → `EntitlementTransaction`.
+- `core/entitlements/service.ts` → `core/entitlements/default-entitlement-service.ts`;
+  `EntitlementServiceImpl` → `DefaultEntitlementService`. `createEntitlementService`
+  is unchanged; its `deps.store` field is now `deps.repository`.
+- `core/entitlements/drizzle-store.ts` → **`src/infrastructure/database/repositories/
+  drizzle-entitlement-repository.ts`**; `DrizzleEntitlementStore` →
+  `DrizzleEntitlementRepository`, `DbExecutor` → `DatabaseExecutor`. This was the real
+  violation: core code was importing `drizzle-orm` and `db/client` directly. `src/core`
+  now imports neither.
+- `core/entitlements/memory-store.ts` → **`test/support/in-memory-entitlement-repository.ts`**;
+  `MemoryEntitlementStore` → `InMemoryEntitlementRepository`. A test double no longer
+  ships in a production feature folder or its barrel.
+- Verb-first port method names: `activeEntitlement` → `findActiveEntitlement`,
+  `usageInWindow` → `getUsageInWindow`, `usageOnLocalDate` → `countUsageOnLocalDate`,
+  `insertUsage` → `recordUsage`, `transaction` → `runInTransaction`, and on
+  `CapacityReader` (which M3/M5 will implement) `activeCategoryCount` →
+  `countActiveCategories`, `reminderCategoryCount` → `countReminderCategories`.
+- `core/entitlements/index.ts` is now a pure barrel — no wiring logic, no adapters.
+- `src/db/schema/entitlement.ts` was reviewed against CLAUDE.md's database-naming
+  section and needed no change (camelCase TS properties, snake_case tables/columns).
+  It was **not** moved — see conflict 3 below.
+
+**Architectural conflicts flagged rather than resolved** (CLAUDE.md: report, don't
+silently choose; all of these need a repo-wide decision, not an M8-only change):
+
+1. **`gate()` vs CLAUDE.md's "Transactions" rule.** CLAUDE.md says core services
+   should not become generic over a Drizzle executor and that raw transaction handles
+   should not cross core-module boundaries — and names M8's `gate()` design as the
+   case to consider. `DefaultEntitlementService<X>` *is* generic over an executor `X`
+   and hands it to the caller's `write(executor)`. Core never imports a Drizzle type
+   (`X` is fully abstract, which is why the in-memory test double can supply a plain
+   object), but in production `X` is a Drizzle transaction handle passed to M3/M5.
+   This is the only design that satisfies M8's own invariant — "capacity checks are
+   atomic with the domain write they gate" — without one of CLAUDE.md's three
+   alternatives (a technology-independent transaction contract, an orchestration
+   service, or an explicit operation on M3/M5's contracts). Deciding between them
+   changes a contract M3/M5 will build against, so it needs a call before those
+   modules land, not a unilateral rewrite here.
+2. **`core/ports/common.ts` and `core/ports/clock.ts` are not under `core/shared/`.**
+   CLAUDE.md's target tree wants `core/shared/common.ts` / `clock.ts` / `money.ts`.
+   Every module (including untouched stubs and PRs in flight) imports them, so moving
+   them is a repo-wide refactor of its own.
+3. **`src/db/` is not under `src/infrastructure/database/`.** `db/client.ts`,
+   `db/schema/*` and `db/migrations/` are shared by all eight modules through one
+   barrel and one `drizzle.config.ts` path. Moving only M8's schema file would
+   fragment that; the whole directory should move in one dedicated commit.
+4. **`src/core/domain/`** (`money.ts`, `period.ts`, `allowance.ts`) is exactly the
+   dumping ground CLAUDE.md warns against — its contents belong to M3/M4/M5. Left to
+   the owning modules.
+5. **`src/core/testing/test-clock.ts`** is a test double inside production `src/`;
+   CLAUDE.md places it at `test/support/test-clock.ts`. It is imported by
+   `test/unit/clock.test.ts` (M1's) as well as M8's tests, so it was left where it is.

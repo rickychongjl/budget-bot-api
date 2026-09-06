@@ -1,13 +1,13 @@
 import { TestClock } from '../../../src/core/testing/test-clock';
 import type { UserId } from '../../../src/core/ports/common';
-import { MemoryEntitlementStore } from '../../../src/core/entitlements/memory-store';
-import { createEntitlementService } from '../../../src/core/entitlements/service';
+import { InMemoryEntitlementRepository } from '../../support/in-memory-entitlement-repository';
+import { createEntitlementService } from '../../../src/core/entitlements/default-entitlement-service';
 import type { EntitlementLimits } from '../../../src/core/entitlements/limits';
-import type { CapacityReader } from '../../../src/core/entitlements/ports';
+import type { CapacityReader } from '../../../src/core/entitlements/entitlement-repository';
 
 /**
  * A stand-in for the state M3 (categories) and M5 (reminder selection) own. The
- * memory store hands this object to `gate` as the executor, so a test's "domain
+ * in-memory repository hands this object to `gate` as the executor, so a test's "domain
  * write" mutates it inside the same locked section as the capacity check — the
  * same shape M3 gets with a Drizzle transaction handle.
  */
@@ -16,10 +16,10 @@ export interface World {
 }
 
 export const capacityFromWorld: CapacityReader<World> = {
-  async activeCategoryCount(userId, world) {
+  async countActiveCategories(userId, world) {
     return world.users.get(userId)?.categories.length ?? 0;
   },
-  async reminderCategoryCount(userId, world) {
+  async countReminderCategories(userId, world) {
     return world.users.get(userId)?.reminders.size ?? 0;
   },
 };
@@ -27,9 +27,9 @@ export const capacityFromWorld: CapacityReader<World> = {
 export function makeHarness(opts: { start?: string; limits?: EntitlementLimits } = {}) {
   const world: World = { users: new Map() };
   const clock = new TestClock(opts.start ?? '2026-09-06T00:00:00.000Z');
-  const store = new MemoryEntitlementStore<World>(world);
+  const repository = new InMemoryEntitlementRepository<World>(world);
   const service = createEntitlementService<World>({
-    store,
+    repository,
     capacity: capacityFromWorld,
     clock,
     timezoneOf: async (userId) => {
@@ -48,7 +48,7 @@ export function makeHarness(opts: { start?: string; limits?: EntitlementLimits }
     const reminders = new Set(categories.slice(0, args.reminders ?? 0));
     world.users.set(userId, { timezone: args.timezone ?? 'Australia/Brisbane', categories, reminders });
     if (args.tier === 'premium') {
-      store.grant(userId, { tier: 'premium', status: 'active', currentPeriodEnd: null });
+      repository.grant(userId, { tier: 'premium', status: 'active', currentPeriodEnd: null });
     }
     return userId;
   }
@@ -63,7 +63,7 @@ export function makeHarness(opts: { start?: string; limits?: EntitlementLimits }
     return results;
   }
 
-  return { world, clock, store, service, addUser, admitMany };
+  return { world, clock, repository, service, addUser, admitMany };
 }
 
 export function at(iso: string): number {

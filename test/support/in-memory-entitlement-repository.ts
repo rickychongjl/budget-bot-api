@@ -1,23 +1,24 @@
-import type { Instant, LocalDate, UserId } from '../ports/common';
+import type { Instant, LocalDate, UserId } from '../../src/core/ports/common';
 import type {
+  EntitlementRepository,
   EntitlementRow,
-  EntitlementStore,
-  EntitlementTx,
+  EntitlementTransaction,
   UsageRow,
   WindowUsage,
-} from './ports';
+} from '../../src/core/entitlements/entitlement-repository';
 
 /**
- * In-memory `EntitlementStore` for unit tests (and for other modules' unit tests
- * that need a working entitlement gate without Postgres).
+ * In-memory `EntitlementRepository` for unit tests (and for other modules' unit tests
+ * that need a working entitlement gate without Postgres). A test adapter — it proves
+ * nothing about Drizzle or Postgres; `test/integration/entitlements.test.ts` does that.
  *
  * Faithful where it matters for the policy: per-user, per-scope locks are held for
- * the whole `transaction` callback, so concurrent admissions and gated writes
+ * the whole `runInTransaction` callback, so concurrent admissions and gated writes
  * serialise exactly as `pg_advisory_xact_lock` makes them in Postgres. Not faithful
  * on rollback — writes apply immediately. The service only writes as the last step
  * of a transaction, so nothing here depends on rollback.
  */
-export class MemoryEntitlementStore<X = undefined> implements EntitlementStore<X> {
+export class InMemoryEntitlementRepository<X = undefined> implements EntitlementRepository<X> {
   private readonly entitlementsByUser = new Map<UserId, EntitlementRow[]>();
   private readonly usage = new Map<UserId, Map<string, UsageRow>>();
   private readonly locks = new Map<string, Promise<void>>();
@@ -48,7 +49,7 @@ export class MemoryEntitlementStore<X = undefined> implements EntitlementStore<X
 
   // ---- reads ------------------------------------------------------------------
 
-  async activeEntitlement(userId: UserId): Promise<EntitlementRow | null> {
+  async findActiveEntitlement(userId: UserId): Promise<EntitlementRow | null> {
     const row = (this.entitlementsByUser.get(userId) ?? []).find((r) => r.status === 'active');
     return row ? { ...row } : null;
   }
@@ -57,7 +58,7 @@ export class MemoryEntitlementStore<X = undefined> implements EntitlementStore<X
     return this.usage.get(userId)?.has(messageId) ?? false;
   }
 
-  async usageInWindow(userId: UserId, after: Instant): Promise<WindowUsage> {
+  async getUsageInWindow(userId: UserId, after: Instant): Promise<WindowUsage> {
     let count = 0;
     let earliest: Instant | null = null;
     for (const row of this.usage.get(userId)?.values() ?? []) {
@@ -69,7 +70,7 @@ export class MemoryEntitlementStore<X = undefined> implements EntitlementStore<X
     return { count, earliest };
   }
 
-  async usageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number> {
+  async countUsageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number> {
     let count = 0;
     for (const row of this.usage.get(userId)?.values() ?? []) {
       if (row.localDate === localDate) count += 1;
@@ -79,18 +80,18 @@ export class MemoryEntitlementStore<X = undefined> implements EntitlementStore<X
 
   // ---- transaction ------------------------------------------------------------
 
-  async transaction<T>(fn: (tx: EntitlementTx<X>) => Promise<T>): Promise<T> {
+  async runInTransaction<T>(fn: (tx: EntitlementTransaction<X>) => Promise<T>): Promise<T> {
     const released: Array<() => void> = [];
-    const tx: EntitlementTx<X> = {
+    const tx: EntitlementTransaction<X> = {
       executor: this.executor,
-      activeEntitlement: (u) => this.activeEntitlement(u),
+      findActiveEntitlement: (u) => this.findActiveEntitlement(u),
       hasUsage: (u, m) => this.hasUsage(u, m),
-      usageInWindow: (u, a) => this.usageInWindow(u, a),
-      usageOnLocalDate: (u, d) => this.usageOnLocalDate(u, d),
+      getUsageInWindow: (u, a) => this.getUsageInWindow(u, a),
+      countUsageOnLocalDate: (u, d) => this.countUsageOnLocalDate(u, d),
       lockUser: async (userId, scope) => {
         released.push(await this.acquire(`${scope}:${userId}`));
       },
-      insertUsage: async (row) => {
+      recordUsage: async (row) => {
         const byUser = this.usage.get(row.userId) ?? new Map<string, UsageRow>();
         if (!byUser.has(row.messageId)) byUser.set(row.messageId, { ...row });
         this.usage.set(row.userId, byUser);

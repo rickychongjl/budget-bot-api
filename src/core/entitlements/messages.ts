@@ -1,5 +1,5 @@
 import type { Tier } from '../ports/common';
-import type { CapacityCounts } from '../ports/entitlement-service';
+import type { CapacityCounts } from './entitlement-service';
 
 /**
  * User-facing refusal text — the exact recovery messaging from

@@ -1,13 +1,14 @@
-import type { Instant, RefusalCode, Tier, UserId } from './common';
+import type { Instant, RefusalCode, Tier, UserId } from '../ports/common';
 
 /**
  * M8 — Entitlements & Limits. One place that answers "is this user allowed to do
- * this?". Policy only this pass — Stars billing is Phase 2.
+ * this?". Policy only this pass — Stars billing is Phase 2 (`./billing.ts`).
  *
- * Interface lifted verbatim from `docs/M8-entitlements-limits.md` ("Public interface").
- * The four method signatures are the contract. The supporting types below were
- * refined by the M8 agent (M1 build-log: "the owning module may refine"); the
- * implementation lives in `core/entitlements/`.
+ * This is the module's incoming port, owned by the module it belongs to (it used to
+ * live in the shared `core/ports/` folder). The four method signatures are lifted
+ * verbatim from `docs/M8-entitlements-limits.md` ("Public interface"); the supporting
+ * types were refined by the M8 agent (M1 build-log: "the owning module may refine").
+ * The implementation is `DefaultEntitlementService` (`./default-entitlement-service.ts`).
  */
 
 export type AdmissionResult =
@@ -84,29 +85,4 @@ export interface EntitlementService {
   assertAllowed(userId: UserId, action: GatedAction): Promise<void>;
 
   assessDowngrade(userId: UserId): Promise<DowngradeEligibility>;
-}
-
-// ---------------------------------------------------------------------------
-// Telegram Stars billing — Phase 2. Present so M7's `/upgrade`, `/subscribe`,
-// `/subscription`, `/paysupport` stubs have a port to compile against; this pass's
-// only implementation answers `not_configured` for everything.
-// ---------------------------------------------------------------------------
-
-export interface StarsPaymentEvent {
-  /** Telegram `telegram_payment_charge_id` — the stable identity for dedupe/refund. */
-  chargeId: string;
-  /** Telegram `subscription_expiration_date`, if the payment is a subscription. */
-  periodEnd: Instant | null;
-  amountStars: number;
-  receivedAt: Instant;
-}
-
-export type BillingOutcome =
-  | { status: 'applied'; tier: Tier; currentPeriodEnd: Instant | null }
-  | { status: 'not_configured'; code: 'BILLING_UNAVAILABLE'; message: string };
-
-export interface StarsBillingService {
-  onPurchase(userId: UserId, event: StarsPaymentEvent): Promise<BillingOutcome>;
-  onRenewal(userId: UserId, event: StarsPaymentEvent): Promise<BillingOutcome>;
-  onRefund(userId: UserId, chargeId: string, receivedAt: Instant): Promise<BillingOutcome>;
 }

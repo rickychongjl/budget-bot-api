@@ -1,14 +1,16 @@
 import type { Instant, LocalDate, Tier, UserId } from '../ports/common';
 
 /**
- * M8-internal ports. The public contract is `EntitlementService` in
- * `core/ports/entitlement-service.ts`; these are the seams the implementation is
- * built on so the policy is unit-testable without a database (in-memory store) and
- * the real thing runs over Drizzle (`drizzle-store.ts`).
+ * M8's outgoing ports — what the entitlements module needs from the outside world.
+ * The incoming contract is `EntitlementService` (`./entitlement-service.ts`); these
+ * are the seams the implementation is built on, so the policy is unit-testable
+ * without a database (`test/support/in-memory-entitlement-repository.ts`) and the
+ * real thing runs over Drizzle
+ * (`infrastructure/database/repositories/drizzle-entitlement-repository.ts`).
  *
  * `X` is the *executor* type — the handle a caller uses to run its own domain write
- * inside the same transaction as a capacity check (`EntitlementServiceImpl.gate`).
- * Drizzle: the transaction handle. Memory: whatever "world" object the test owns.
+ * inside the same transaction as a capacity check (`DefaultEntitlementService.gate`).
+ * Drizzle: the transaction handle. In-memory: whatever "world" object the test owns.
  */
 
 /** A projection of one `entitlement` row — only what tier resolution needs. */
@@ -35,15 +37,15 @@ export interface WindowUsage {
 /** Read side; the same operations are available inside and outside a transaction. */
 export interface EntitlementReads {
   /** The user's `status = 'active'` row, if any. At most one exists (partial unique index). */
-  activeEntitlement(userId: UserId): Promise<EntitlementRow | null>;
+  findActiveEntitlement(userId: UserId): Promise<EntitlementRow | null>;
   hasUsage(userId: UserId, messageId: string): Promise<boolean>;
-  usageInWindow(userId: UserId, after: Instant): Promise<WindowUsage>;
-  usageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number>;
+  getUsageInWindow(userId: UserId, after: Instant): Promise<WindowUsage>;
+  countUsageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number>;
 }
 
 export type UserLockScope = 'admission' | 'capacity';
 
-export interface EntitlementTx<X> extends EntitlementReads {
+export interface EntitlementTransaction<X> extends EntitlementReads {
   /** The caller's handle for running its own writes in this transaction. */
   readonly executor: X;
   /**
@@ -52,12 +54,12 @@ export interface EntitlementTx<X> extends EntitlementReads {
    * "count then insert" into one atomic admission under concurrent redelivery.
    */
   lockUser(userId: UserId, scope: UserLockScope): Promise<void>;
-  /** Insert one admitted message. Must be idempotent on `(userId, messageId)`. */
-  insertUsage(row: UsageRow): Promise<void>;
+  /** Record one admitted message. Must be idempotent on `(userId, messageId)`. */
+  recordUsage(row: UsageRow): Promise<void>;
 }
 
-export interface EntitlementStore<X> extends EntitlementReads {
-  transaction<T>(fn: (tx: EntitlementTx<X>) => Promise<T>): Promise<T>;
+export interface EntitlementRepository<X> extends EntitlementReads {
+  runInTransaction<T>(fn: (tx: EntitlementTransaction<X>) => Promise<T>): Promise<T>;
 }
 
 /**
@@ -67,8 +69,8 @@ export interface EntitlementStore<X> extends EntitlementReads {
  * take the executor so they read inside the gating transaction.
  */
 export interface CapacityReader<X> {
-  activeCategoryCount(userId: UserId, executor: X): Promise<number>;
-  reminderCategoryCount(userId: UserId, executor: X): Promise<number>;
+  countActiveCategories(userId: UserId, executor: X): Promise<number>;
+  countReminderCategories(userId: UserId, executor: X): Promise<number>;
 }
 
 /** M2's immutable timezone — production wiring adapts `IdentityService.getSettings`. */

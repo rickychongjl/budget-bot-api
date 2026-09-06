@@ -68,7 +68,7 @@ describe('admitMessage — fair-use rolling window (20 per 120 minutes, both tie
     for (let i = 0; i < 10; i++) {
       expect(await h.service.admitMessage(user, `spam-${i}`, h.clock.now())).toMatchObject({ outcome: 'refused' });
     }
-    expect(h.store.usageRows(user)).toHaveLength(20);
+    expect(h.repository.usageRows(user)).toHaveLength(20);
 
     // When exactly one slot frees, exactly one new message gets in.
     h.clock.set(t0 + 120 * MIN);
@@ -112,7 +112,7 @@ describe('admitMessage — Free daily cap (5 per user-local day, midnight in the
     // … and local midnight admits, with a fresh local_date on the row.
     h.clock.set(at('2026-09-07T14:00:00Z'));
     expect(await h.service.admitMessage(user, 'm-7', h.clock.now())).toEqual({ outcome: 'admitted' });
-    expect(h.store.usageRows(user).map((r) => r.localDate).sort()).toEqual([
+    expect(h.repository.usageRows(user).map((r) => r.localDate).sort()).toEqual([
       '2026-09-07', '2026-09-07', '2026-09-07', '2026-09-07', '2026-09-07', '2026-09-08',
     ]);
   });
@@ -204,7 +204,7 @@ describe('admitMessage — exactly-once by stable message id', () => {
     expect(await h.service.admitMessage(user, 'tg:123', h.clock.now())).toEqual({ outcome: 'admitted' });
     expect(await h.service.admitMessage(user, 'tg:123', h.clock.now())).toEqual({ outcome: 'duplicate' });
     expect(await h.service.admitMessage(user, 'tg:123', h.clock.now() + 5 * MIN)).toEqual({ outcome: 'duplicate' });
-    expect(h.store.usageRows(user)).toHaveLength(1);
+    expect(h.repository.usageRows(user)).toHaveLength(1);
   });
 
   it('a redelivery of an already-counted message is a duplicate even when the user is now over limit', async () => {
@@ -223,7 +223,7 @@ describe('admitMessage — exactly-once by stable message id', () => {
     );
     expect(results.filter((r) => r.outcome === 'admitted')).toHaveLength(1);
     expect(results.filter((r) => r.outcome === 'duplicate')).toHaveLength(7);
-    expect(h.store.usageRows(user)).toHaveLength(1);
+    expect(h.repository.usageRows(user)).toHaveLength(1);
   });
 
   it('concurrent distinct messages cannot overshoot the window under the per-user lock', async () => {
@@ -234,7 +234,7 @@ describe('admitMessage — exactly-once by stable message id', () => {
     );
     expect(results.filter((r) => r.outcome === 'admitted')).toHaveLength(20);
     expect(results.filter((r) => r.outcome === 'refused')).toHaveLength(15);
-    expect(h.store.usageRows(user)).toHaveLength(20);
+    expect(h.repository.usageRows(user)).toHaveLength(20);
   });
 
   it('locks are per user — one user at the cap does not block another', async () => {

@@ -1,31 +1,31 @@
 import { and, count, eq, gt, sql } from 'drizzle-orm';
-import type { Database } from '../../db/client';
-import { entitlement, usageCounter } from '../../db/schema/entitlement';
-import type { Instant, LocalDate, UserId } from '../ports/common';
+import type { Database } from '../../../db/client';
+import { entitlement, usageCounter } from '../../../db/schema/entitlement';
 import type {
   EntitlementReads,
+  EntitlementRepository,
   EntitlementRow,
-  EntitlementStore,
-  EntitlementTx,
+  EntitlementTransaction,
   UsageRow,
   UserLockScope,
   WindowUsage,
-} from './ports';
+} from '../../../core/entitlements/entitlement-repository';
+import type { Instant, LocalDate, UserId } from '../../../core/ports/common';
 
 /**
  * Either the root Drizzle handle or a transaction handle — the executor other
  * modules' `CapacityReader`s and gated writes receive.
  */
-export type DbExecutor = Database | Parameters<Parameters<Database['transaction']>[0]>[0];
+export type DatabaseExecutor = Database | Parameters<Parameters<Database['transaction']>[0]>[0];
 
 const LOCK_NAMESPACE: Record<UserLockScope, string> = {
   admission: 'm8:admission',
   capacity: 'm8:capacity',
 };
 
-function reads(x: DbExecutor): EntitlementReads {
+function reads(x: DatabaseExecutor): EntitlementReads {
   return {
-    async activeEntitlement(userId: UserId): Promise<EntitlementRow | null> {
+    async findActiveEntitlement(userId: UserId): Promise<EntitlementRow | null> {
       const [row] = await x
         .select({
           tier: entitlement.tier,
@@ -52,7 +52,7 @@ function reads(x: DbExecutor): EntitlementReads {
       return row !== undefined;
     },
 
-    async usageInWindow(userId: UserId, after: Instant): Promise<WindowUsage> {
+    async getUsageInWindow(userId: UserId, after: Instant): Promise<WindowUsage> {
       const [row] = await x
         .select({
           count: count(),
@@ -67,7 +67,7 @@ function reads(x: DbExecutor): EntitlementReads {
       };
     },
 
-    async usageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number> {
+    async countUsageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number> {
       const [row] = await x
         .select({ count: count() })
         .from(usageCounter)
@@ -78,37 +78,39 @@ function reads(x: DbExecutor): EntitlementReads {
 }
 
 /**
- * Production `EntitlementStore` over Drizzle / postgres.js. Per-user serialisation
- * uses a transaction-scoped advisory lock keyed on `(scope, user_id)`, so two
- * concurrent admissions (or a category creation racing a downgrade check) queue
- * behind one another and each re-reads the counts after the other commits.
+ * Production `EntitlementRepository` over Drizzle / postgres.js. Per-user
+ * serialisation uses a transaction-scoped advisory lock keyed on `(scope, user_id)`,
+ * so two concurrent admissions (or a category creation racing a downgrade check)
+ * queue behind one another and each re-reads the counts after the other commits.
+ *
+ * Persistence only — every user-facing decision stays in `DefaultEntitlementService`.
  */
-export class DrizzleEntitlementStore implements EntitlementStore<DbExecutor> {
+export class DrizzleEntitlementRepository implements EntitlementRepository<DatabaseExecutor> {
   private readonly root: EntitlementReads;
 
   constructor(private readonly db: Database) {
     this.root = reads(db);
   }
 
-  activeEntitlement(userId: UserId): Promise<EntitlementRow | null> {
-    return this.root.activeEntitlement(userId);
+  findActiveEntitlement(userId: UserId): Promise<EntitlementRow | null> {
+    return this.root.findActiveEntitlement(userId);
   }
 
   hasUsage(userId: UserId, messageId: string): Promise<boolean> {
     return this.root.hasUsage(userId, messageId);
   }
 
-  usageInWindow(userId: UserId, after: Instant): Promise<WindowUsage> {
-    return this.root.usageInWindow(userId, after);
+  getUsageInWindow(userId: UserId, after: Instant): Promise<WindowUsage> {
+    return this.root.getUsageInWindow(userId, after);
   }
 
-  usageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number> {
-    return this.root.usageOnLocalDate(userId, localDate);
+  countUsageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number> {
+    return this.root.countUsageOnLocalDate(userId, localDate);
   }
 
-  transaction<T>(fn: (tx: EntitlementTx<DbExecutor>) => Promise<T>): Promise<T> {
+  runInTransaction<T>(fn: (tx: EntitlementTransaction<DatabaseExecutor>) => Promise<T>): Promise<T> {
     return this.db.transaction(async (handle) => {
-      const tx: EntitlementTx<DbExecutor> = {
+      const tx: EntitlementTransaction<DatabaseExecutor> = {
         ...reads(handle),
         executor: handle,
         async lockUser(userId, scope) {
@@ -116,7 +118,7 @@ export class DrizzleEntitlementStore implements EntitlementStore<DbExecutor> {
             sql`select pg_advisory_xact_lock(hashtext(${LOCK_NAMESPACE[scope]}), hashtext(${userId}))`,
           );
         },
-        async insertUsage(row: UsageRow) {
+        async recordUsage(row: UsageRow) {
           await handle
             .insert(usageCounter)
             .values({

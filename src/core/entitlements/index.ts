@@ -1,17 +1,20 @@
 /**
  * M8 — Entitlements & Limits (Phase 1, policy only — billing is Phase 2).
  *
- * Implements `EntitlementService` (`core/ports/entitlement-service.ts`) against
- * `db/schema/entitlement.ts`. Owns the tier check, inbound message quotas (5/day
- * Free, 20/rolling-2h both tiers), category/reminder capacity, requested-downgrade
- * validation. `admitMessage` is one atomic check-and-record.
+ * The module's public surface: the incoming `EntitlementService` contract, its
+ * default implementation, the outgoing repository/capacity ports, the settled tier
+ * limits, the refusal wording and the local-time helpers. No logic lives here.
+ *
+ * Adapters live outside core:
+ *   infrastructure/database/repositories/drizzle-entitlement-repository.ts (production)
+ *   test/support/in-memory-entitlement-repository.ts                       (tests)
  *
  * Wiring (M7 / the composition root):
  *
- *   const store = new DrizzleEntitlementStore(db);
+ *   const repository = new DrizzleEntitlementRepository(db);
  *   const entitlements = createEntitlementService({
- *     store,
- *     capacity: { activeCategoryCount, reminderCategoryCount },   // supplied by M3 / M5
+ *     repository,
+ *     capacity: { countActiveCategories, countReminderCategories },  // supplied by M3 / M5
  *     timezoneOf: (id) => identity.getSettings(id).then((s) => s.timezone), // M2
  *     clock,
  *   });
@@ -19,25 +22,46 @@
  * M3/M5 make a capacity check atomic with their write via
  * `entitlements.gate(userId, { kind: 'create_category' }, (tx) => tx.insert(...))`.
  */
-export { EntitlementServiceImpl, createEntitlementService } from './service';
-export type { EntitlementServiceDeps } from './service';
-export { DEFAULT_LIMITS, MINUTE_MS } from './limits';
-export type { EntitlementLimits, FairUseWindow, TierLimits } from './limits';
+export { EntitlementRefusal, isEntitlementRefusal } from './entitlement-service';
+export type {
+  AdmissionResult,
+  CapacityCounts,
+  DowngradeEligibility,
+  EntitlementService,
+  GatedAction,
+} from './entitlement-service';
+
+export { DefaultEntitlementService, createEntitlementService } from './default-entitlement-service';
+export type { EntitlementServiceDeps } from './default-entitlement-service';
+
 export type {
   CapacityReader,
   EntitlementReads,
+  EntitlementRepository,
   EntitlementRow,
-  EntitlementStore,
-  EntitlementTx,
+  EntitlementTransaction,
   TimezoneReader,
   UsageRow,
   UserLockScope,
   WindowUsage,
-} from './ports';
-export { DrizzleEntitlementStore } from './drizzle-store';
-export type { DbExecutor } from './drizzle-store';
-export { MemoryEntitlementStore } from './memory-store';
-export { NotConfiguredStarsBilling, BILLING_NOT_CONFIGURED_MESSAGE } from './billing';
+} from './entitlement-repository';
+
+export { DEFAULT_LIMITS, MINUTE_MS } from './limits';
+export type { EntitlementLimits, FairUseWindow, TierLimits } from './limits';
+
+export { BILLING_NOT_CONFIGURED_MESSAGE, NotConfiguredStarsBilling } from './billing';
+export type { BillingOutcome, StarsBillingService, StarsPaymentEvent } from './billing';
+
+export {
+  ALREADY_FREE,
+  categoryLimitRefusal,
+  combinedRefusal,
+  dailyRefusal,
+  downgradeCleanup,
+  fairUseRefusal,
+  reminderLimitRefusal,
+} from './messages';
+
 export {
   addLocalDays,
   formatLocalTime,

@@ -1,9 +1,12 @@
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDatabase, type Database } from '../../src/db/client';
-import { DrizzleEntitlementStore, type DbExecutor } from '../../src/core/entitlements/drizzle-store';
-import { createEntitlementService } from '../../src/core/entitlements/service';
-import type { CapacityReader } from '../../src/core/entitlements/ports';
+import {
+  DrizzleEntitlementRepository,
+  type DatabaseExecutor,
+} from '../../src/infrastructure/database/repositories/drizzle-entitlement-repository';
+import { createEntitlementService } from '../../src/core/entitlements/default-entitlement-service';
+import type { CapacityReader } from '../../src/core/entitlements/entitlement-repository';
 import { TestClock } from '../../src/core/testing/test-clock';
 
 /**
@@ -21,11 +24,11 @@ describe.skipIf(!url)('EntitlementService over Drizzle', () => {
   let userId: string;
 
   // M8 never reads M3/M5 tables; for this suite the counts are a fixed fake.
-  const capacity: CapacityReader<DbExecutor> = {
-    async activeCategoryCount() {
+  const capacity: CapacityReader<DatabaseExecutor> = {
+    async countActiveCategories() {
       return 0;
     },
-    async reminderCategoryCount() {
+    async countReminderCategories() {
       return 0;
     },
   };
@@ -43,8 +46,8 @@ describe.skipIf(!url)('EntitlementService over Drizzle', () => {
   });
 
   function service(clock: TestClock) {
-    return createEntitlementService<DbExecutor>({
-      store: new DrizzleEntitlementStore(db),
+    return createEntitlementService<DatabaseExecutor>({
+      repository: new DrizzleEntitlementRepository(db),
       capacity,
       timezoneOf: async () => 'Australia/Brisbane',
       clock,

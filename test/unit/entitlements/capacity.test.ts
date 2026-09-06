@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EntitlementRefusal, isEntitlementRefusal } from '../../../src/core/ports/entitlement-service';
+import { EntitlementRefusal, isEntitlementRefusal } from '../../../src/core/entitlements/entitlement-service';
 import { NotConfiguredStarsBilling } from '../../../src/core/entitlements/billing';
 import { at, makeHarness, tick, type World } from './harness';
 
@@ -22,9 +22,9 @@ describe('tierOf', () => {
   it('is Premium for an active row with no period end, or a future one', async () => {
     const h = makeHarness({ start: '2026-09-06T00:00:00Z' });
     const open = h.addUser();
-    h.store.grant(open, { tier: 'premium', status: 'active', currentPeriodEnd: null });
+    h.repository.grant(open, { tier: 'premium', status: 'active', currentPeriodEnd: null });
     const dated = h.addUser();
-    h.store.grant(dated, { tier: 'premium', status: 'active', currentPeriodEnd: at('2026-10-06T00:00:00Z') });
+    h.repository.grant(dated, { tier: 'premium', status: 'active', currentPeriodEnd: at('2026-10-06T00:00:00Z') });
     expect(await h.service.tierOf(open)).toBe('premium');
     expect(await h.service.tierOf(dated)).toBe('premium');
   });
@@ -32,7 +32,7 @@ describe('tierOf', () => {
   it('re-validates every call — lapses to Free the instant current_period_end passes, with no status change', async () => {
     const h = makeHarness({ start: '2026-10-05T23:59:59.999Z' });
     const user = h.addUser();
-    h.store.grant(user, { tier: 'premium', status: 'active', currentPeriodEnd: at('2026-10-06T00:00:00Z') });
+    h.repository.grant(user, { tier: 'premium', status: 'active', currentPeriodEnd: at('2026-10-06T00:00:00Z') });
     expect(await h.service.tierOf(user)).toBe('premium');
     h.clock.advance(1);
     expect(await h.service.tierOf(user)).toBe('free');
@@ -42,9 +42,9 @@ describe('tierOf', () => {
     for (const status of ['expired', 'cancelled', 'refunded'] as const) {
       const h = makeHarness();
       const user = h.addUser();
-      h.store.grant(user, { tier: 'premium', status: 'active', currentPeriodEnd: null });
+      h.repository.grant(user, { tier: 'premium', status: 'active', currentPeriodEnd: null });
       expect(await h.service.tierOf(user)).toBe('premium');
-      h.store.updateActive(user, { status });
+      h.repository.updateActive(user, { status });
       expect(await h.service.tierOf(user)).toBe('free');
     }
   });
@@ -52,7 +52,7 @@ describe('tierOf', () => {
   it('gated actions use the live tier — a lapsed Premium user is held to Free limits', async () => {
     const h = makeHarness({ start: '2026-09-06T00:00:00Z' });
     const user = h.addUser({ categories: 12 });
-    h.store.grant(user, { tier: 'premium', status: 'active', currentPeriodEnd: at('2026-09-07T00:00:00Z') });
+    h.repository.grant(user, { tier: 'premium', status: 'active', currentPeriodEnd: at('2026-09-07T00:00:00Z') });
     await expect(h.service.assertAllowed(user, { kind: 'create_category' })).resolves.toBeUndefined();
     h.clock.set(at('2026-09-07T00:00:00Z'));
     expect((await refusalOf(h.service.assertAllowed(user, { kind: 'create_category' }))).code).toBe('CATEGORY_LIMIT');
