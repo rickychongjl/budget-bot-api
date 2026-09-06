@@ -1,0 +1,8 @@
+# Copy to `.dev.vars` for local `wrangler dev`. NEVER commit `.dev.vars`.
+# In production these are Wrangler secrets (`wrangler secret put <NAME>`), not file entries.
+
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_WEBHOOK_SECRET=""
+INTERNAL_DISPATCH_SECRET=""
+OPENAI_API_KEY=""
+DATABASE_URL="postgres://user:pass@host/db?sslmode=require"

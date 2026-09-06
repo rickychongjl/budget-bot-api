@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck + unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  integration:
+    name: migrations + integration (Neon branch)
+    runs-on: ubuntu-latest
+    needs: test
+    # Runs once the Neon project exists: set repo variable NEON_PROJECT_ID and
+    # secret NEON_API_KEY. Until then the job is skipped, not failed.
+    if: ${{ github.event_name == 'pull_request' && vars.NEON_PROJECT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Create ephemeral Neon branch
+        id: neon
+        uses: neondatabase/create-branch-action@v5
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch_name: ci-pr-${{ github.event.number }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+
+      - name: Apply forward-only migrations
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.db_url }}
+
+      - name: Integration suite
+        run: npm run test:integration
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.db_url }}
+
+      - name: Delete ephemeral Neon branch
+        if: always()
+        uses: neondatabase/delete-branch-action@v3
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch: ci-pr-${{ github.event.number }}
+          api_key: ${{ secrets.NEON_API_KEY }}

@@ -1,0 +1,41 @@
+name: Deploy (production)
+
+# Single environment this pass (master plan §5.7). Production migrations run first
+# and must succeed before the Worker deploys — M1 §5.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: migrate + deploy
+    runs-on: ubuntu-latest
+    # Enabled once the Cloudflare + Neon production secrets are in place: set repo
+    # variable DEPLOY_ENABLED=true. Until then this job is skipped, not failed.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: Run production migrations (must succeed before deploy)
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy

@@ -1,0 +1,37 @@
+# budge-bot-api — one Cloudflare Worker holding the whole product.
+#
+# Single environment for this pass: PRODUCTION ONLY.
+# Master plan §5.7 / M1 §6 — no staging Worker, no separate test bot token.
+# Pre-merge testing relies on CI's per-PR ephemeral Neon branch + unit/integration tests.
+#
+# Secrets are NEVER committed here. Set them with `wrangler secret put <NAME>`:
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_WEBHOOK_SECRET
+#   INTERNAL_DISPATCH_SECRET
+#   OPENAI_API_KEY
+#   DATABASE_URL          (postgres.js connection string for the Neon Sydney branch)
+
+name = "budge-bot-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = false
+
+[observability]
+enabled = true
+
+# Workers Cron Triggers — the only "background process" available on the Free plan.
+# M5's daily-allowance scheduler runs every 15 minutes (Adelaide/Darwin are UTC+9:30,
+# so an hourly tick would deliver a 07:00 message half an hour off). For M1 this fires
+# a one-line hello-world handler to prove the scheduler wiring before M5 needs it.
+[triggers]
+crons = ["*/15 * * * *"]
+
+# Neon Postgres (Sydney) is reached through a Hyperdrive binding + postgres.js.
+# Create the binding with:
+#   wrangler hyperdrive create budge-bot-prod --connection-string "$DATABASE_URL"
+# then paste its id below. Not a secret, but environment-specific.
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "REPLACE_WITH_HYPERDRIVE_ID"
