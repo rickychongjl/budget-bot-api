@@ -17,6 +17,25 @@ import { TestClock } from '../support/test-clock';
  * Skipped without `DATABASE_URL`. Not run locally by the M8 agent (no Neon project
  * yet) — first exercised by CI once M2's migration has landed. See build-log.
  */
+/**
+ * The name of the constraint a failing statement tripped, or `undefined` if it
+ * succeeded.
+ *
+ * Not `rejects.toThrow(/name/)`: Drizzle's wrapper sets `message` to just
+ * `Failed query: <sql>`, and the constraint name lives on the `PostgresError` it
+ * carries as `cause`. Matching the wrapper message can never see it. Reading
+ * `constraint_name` also pins the *exact* constraint rather than a substring, so a
+ * statement failing for an unrelated reason can't accidentally satisfy the assertion.
+ */
+async function constraintViolatedBy(run: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await run;
+    return undefined;
+  } catch (error) {
+    return (error as { cause?: { constraint_name?: string } }).cause?.constraint_name;
+  }
+}
+
 const url = process.env.DATABASE_URL;
 
 describe.skipIf(!url)('EntitlementService over Drizzle', () => {
@@ -85,14 +104,20 @@ describe.skipIf(!url)('EntitlementService over Drizzle', () => {
     await db.execute(
       sql`insert into entitlement (user_id, tier, source, status) values (${userId}, 'premium', 'manual', 'active')`,
     );
-    await expect(
-      db.execute(
-        sql`insert into entitlement (user_id, tier, source, status) values (${userId}, 'premium', 'manual', 'active')`,
+    expect(
+      await constraintViolatedBy(
+        db.execute(
+          sql`insert into entitlement (user_id, tier, source, status) values (${userId}, 'premium', 'manual', 'active')`,
+        ),
       ),
-    ).rejects.toThrow(/entitlement_one_active/);
-    await expect(
-      db.execute(sql`insert into entitlement (user_id, tier, source, status) values (${userId}, 'gold', 'manual', 'expired')`),
-    ).rejects.toThrow(/entitlement_tier_check/);
+    ).toBe('entitlement_one_active');
+    expect(
+      await constraintViolatedBy(
+        db.execute(
+          sql`insert into entitlement (user_id, tier, source, status) values (${userId}, 'gold', 'manual', 'expired')`,
+        ),
+      ),
+    ).toBe('entitlement_tier_check');
     expect(await service(new TestClock('2026-09-06T14:00:00Z')).tierOf(userId)).toBe('premium');
   });
 });
