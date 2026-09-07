@@ -112,7 +112,6 @@ question it hit. Read between PR reviews (master plan §7). Newest last.
    keep it.
 
 ---
-
 ## M2 — Identity & Accounts — 2026-09-06
 
 **Branch:** `m2-identity-accounts` · **Phase:** 1
@@ -472,3 +471,257 @@ folder still exists.
 - `npm run db:generate` — no-op; the existing `identity` migration snapshot is
   unchanged.
 - `npm run test:integration` — not executed (no `DATABASE_URL` in this environment).
+
+---
+
+## M8 — Entitlements & Limits — 2026-09-06
+
+**Branch:** `worktree-agent-ac0392f4153274c16` · **Phase:** 1 (policy only; Stars billing is Phase 2)
+
+### Built
+
+- **Schema** `src/infrastructure/database/schema/entitlement.ts` — `entitlement` and the revised
+  `usage_counter`, Drizzle definitions matching M8's provisional SQL exactly: `text` +
+  `check` for `tier`/`source`/`status`, partial unique index `entitlement_one_active`
+  `(user_id) where status = 'active'`, `usage_counter` PK `(user_id, message_id)`,
+  indexes `usage_counter_window (user_id, admitted_at)` and `usage_counter_daily
+  (user_id, local_date)`, both FKs `references app_user(id) on delete cascade`. Verified
+  by running `drizzle-kit generate` against a throwaway copy with a stub `app_user` —
+  the emitted SQL is the doc's, statement for statement. **No migration file is
+  committed** (see Open questions 1).
+- **`EntitlementService` implementation** in `src/core/entitlements/`:
+  - `service.ts` — `EntitlementServiceImpl<X>` / `createEntitlementService`. Storage-
+    agnostic policy over an M8-internal `EntitlementStore<X>` port (`ports.ts`), where
+    `X` is the *executor* type (Drizzle transaction handle in production).
+  - `admitMessage` is **one store transaction**: per-user advisory lock → duplicate
+    `message_id` short-circuits to `duplicate` *before* any limit check (a redelivery
+    of a counted message is never refused) → fair-use window and Free daily cap
+    evaluated together → refused returns without writing; admitted inserts the
+    `usage_counter` row (`on conflict do nothing` as belt-and-braces). The window is a
+    true sliding window: rows with `admitted_at > receivedAt − 120 min` count, so an
+    event exactly 120 minutes old has left. `local_date` is computed at write time
+    from `receivedAt` and M2's immutable timezone (`local-time.ts`, `Intl`-based, no
+    tz library; handles DST 23/25-hour days and midnight-gap zones).
+  - Recovery messaging verbatim from the doc (`messages.ts`): fair-use *"You've
+    reached 20 messages in 2 hours. Try again in {minutes} minutes."* computed from the
+    earliest counted message's expiry (`ceil`, min 1, singular "1 minute"); daily
+    *"You've used your 5 messages today. Your limit resets at 12:00 am
+    (Australia/Brisbane)."*; both exhausted → the later `retryAt`, its code, and a
+    message explaining both.
+  - `assertAllowed` — `create_category`/`reactivate_category` (10 Free / 30 Premium,
+    non-archived count), `enable_reminder` (1 / 5), `request_downgrade` (≤10 AND ≤1;
+    a Free user gets `NO_SUBSCRIPTION`). Throws `EntitlementRefusal` (new class in the
+    port file) carrying M11's `RefusalCode` + user text; `retryAt` for time limits.
+  - **`gate(userId, action, write)`** — the atomic form of `assertAllowed`: runs the
+    caller's write in the same transaction, serialised behind the capacity check under
+    a per-user lock. This is how M3/M5 satisfy "capacity checks are atomic with the
+    domain write they gate"; `assertAllowed` alone is `gate` with a no-op write.
+  - `assessDowngrade` — returns `eligible`, `tier`, `current`, `limits`, `mustRemove`,
+    and a cleanup `message`; never deletes anything.
+  - `tierOf` — reads the `status = 'active'` row on every call and *also* treats an
+    active row with `current_period_end <= clock.now()` as Free. No caching anywhere.
+  - `drizzle-store.ts` — production store; locks via
+    `pg_advisory_xact_lock(hashtext('m8:<scope>'), hashtext(user_id))`.
+  - `memory-store.ts` — in-memory store with real per-user async locks held for the
+    whole transaction callback, so concurrency tests mean something. Exported for
+    other modules' unit tests too.
+  - `billing.ts` — `NotConfiguredStarsBilling` implementing the new
+    `StarsBillingService` port: purchase/renewal/refund all answer
+    `{ status: 'not_configured', code: 'BILLING_UNAVAILABLE' }`.
+- **Port file** `src/core/ports/entitlement-service.ts` — the four method signatures
+  are untouched. Added: `EntitlementRefusal` + `isEntitlementRefusal`, `CapacityCounts`,
+  a richer `DowngradeEligibility` (superset of M1's), and the Phase 2
+  `StarsBillingService` / `StarsPaymentEvent` / `BillingOutcome` types.
+- **Tests** — 44 new unit tests (`test/unit/entitlements/`), all with `TestClock`:
+  21st-in-window refused / 22nd admitted at exactly +120 min (and refused at
+  +120 min − 1 ms); 20 + 21 burst across the 02:00 wall-clock boundary refused; a
+  refused attempt consumes no slot; Free's 6th of the local day refused with the
+  local reset instant, admitted at local midnight; Premium's 100th admitted; local-
+  day vs UTC-day (Brisbane vs Honolulu); Sydney DST 23-hour day; both-limits branch
+  (via injected limits, since it's unreachable under 5/day < 20/2h); duplicate id
+  once (sequential, over-limit, and 8-way concurrent); 35 concurrent distinct
+  messages → exactly 20; per-user lock independence; `tierOf` lapse at
+  `current_period_end` and on status change; category 9/10, 29/30, reactivate;
+  reminder 0/1, 4/5; **concurrent `gate` creations at 9 → exactly one succeeds**;
+  downgrade 11/2 refused with the exact instructions, 10/1 eligible; billing stubs.
+  Plus `local-time` unit tests. `test/integration/entitlements.test.ts` runs only
+  with `DATABASE_URL` (PK dedupe under concurrency, daily cap, partial unique index
+  and check constraints at the DB) — not run locally, see Open questions 2.
+- `npm run typecheck` clean; `npm test` 53 passed, 3 skipped (integration).
+
+### Assumed
+
+- **`receivedAt` is the accounting instant** for both the window and `local_date` —
+  it's the message's arrival as M7 saw it (M7 gets it from its `Clock`). The injected
+  `Clock` in this module is used for tier validity (`current_period_end`), not for
+  message accounting. No `Date.now()` anywhere.
+- **Reminder-enabled state has no schema home yet.** No module doc defines where
+  "reminder enabled on category X" is stored (`category` has no such column; M5's
+  table is per-day; M11's `/remind` lists M5/M2/M8). Per the doc ("this module just
+  compares the count M3 supplies"), M8 takes an injected `CapacityReader<X>` —
+  `activeCategoryCount` (M3: `count(*) where is_archived = false`) and
+  `reminderCategoryCount` (whoever owns the flag) — and never reads those tables
+  itself. Production wiring supplies these; `timezoneOf` is an adapter over
+  `IdentityService.getSettings(id).timezone`.
+- **Window is unbounded above**: any row with `admitted_at` within the last 120 min
+  counts, including one timestamped slightly *after* `receivedAt` (out-of-order
+  delivery). Conservative in the user's disfavour by at most the reordering skew.
+- **A lapsed-but-still-`active` Premium row is Free** without M8 mutating `status` —
+  the state machine that flips it is Phase 2 billing. Reads stay side-effect free.
+- **Refusal codes for `request_downgrade`**: `CATEGORY_LIMIT` if categories are over
+  (with or without reminders over), else `REMINDER_CATEGORY_LIMIT`; message always
+  lists everything that must go. Free user → `NO_SUBSCRIPTION`.
+- **Reset-time label** is `formatLocalTime` (`en-AU`, `12:00 am`) plus the IANA name in
+  parentheses. M7 may re-render from `retryAt` if a different format is wanted.
+- **Advisory-lock scopes** are `m8:admission` and `m8:capacity`, keyed by user — a
+  user at the message cap doesn't block their own category creation, and no user
+  blocks another.
+- `TierLimits`/`FairUseWindow` are injectable (`limits` dep) **only** so tests can hit
+  the combined-limits branch; the values are settled policy, not config.
+
+### Open questions
+
+1. **Merge order: M2 before this PR.** `entitlement.user_id` / `usage_counter.user_id`
+   import `appUser` from `src/db/schema/identity.ts`, which is still M1's `export {}`
+   on this branch. The import is isolated with one `// @ts-expect-error` line and a
+   `TODO(M2 merge order)` comment so the whole tree still typechecks; **after
+   rebasing onto M2, delete that directive** — tsc will then fail on it as an unused
+   `@ts-expect-error`, so it can't be forgotten. Then run `npm run db:generate` to emit
+   the migration (it must be numbered after M2's, which is why none is committed
+   here) and commit the SQL + `meta/`. The expected SQL is in the PR body.
+2. **Integration suite not executed.** No Neon project / `DATABASE_URL` locally, and
+   `app_user` doesn't exist yet. The suite is `describe.skipIf(!DATABASE_URL)`; CI's
+   per-PR branch job will be its first real run once M2's migration is in. The
+   `min(admitted_at)` mapping (`.mapWith(usageCounter.admittedAt)`) and the
+   `hashtext(...)` parameter typing are the two lines I'd watch on that first run.
+3. **Who owns the reminder flag?** See Assumed. Whichever of M3/M5 adds the column,
+   it should also provide the `reminderCategoryCount` reader and call
+   `entitlements.gate(userId, { kind: 'enable_reminder' }, write)` around the flip.
+   `category.reminder_enabled boolean not null default false` on M3's table would be
+   the simplest home, and M3's archive path must clear it (M3 doc §"Also required").
+4. **`GatedAction` not widened.** M1's four kinds cover the doc. If M7 needs a gate for
+   callback-driven actions ("must not let button-driven actions bypass the same
+   admission gate"), that's `admitMessage` with the callback's stable id — no new
+   kind needed, but M7 should confirm its id scheme distinguishes callback ids from
+   message ids.
+
+### CLAUDE.md convention pass — 2026-09-06 (follow-up commit on the same branch)
+
+`CLAUDE.md` landed on `phase-1` after the M8 implementation commit. This branch was
+merged with it and the entitlements module *only* was brought in line. No behaviour
+changed: same 53 unit tests, same assertions, `npm run typecheck` clean.
+
+**Moved / renamed (module scope only):**
+
+- `src/core/ports/entitlement-service.ts` → `src/core/entitlements/entitlement-service.ts`
+  — a module-owned contract belongs in its feature folder, not the global `core/ports`
+  dumping ground. `src/core/ports/index.ts` drops that one re-export line; the other
+  modules' stubs there are untouched (they move with their own PRs).
+- The Phase 2 billing port (`StarsBillingService` / `StarsPaymentEvent` /
+  `BillingOutcome`) moved from that same file into `core/entitlements/billing.ts`,
+  where its only implementation (`NotConfiguredStarsBilling`) already lived.
+- `core/entitlements/ports.ts` → `core/entitlements/entitlement-repository.ts` (the
+  outgoing port), with `EntitlementStore` → `EntitlementRepository` and
+  `EntitlementTx` → `EntitlementTransaction`.
+- `core/entitlements/service.ts` → `core/entitlements/default-entitlement-service.ts`;
+  `EntitlementServiceImpl` → `DefaultEntitlementService`. `createEntitlementService`
+  is unchanged; its `deps.store` field is now `deps.repository`.
+- `core/entitlements/drizzle-store.ts` → **`src/infrastructure/database/repositories/
+  drizzle-entitlement-repository.ts`**; `DrizzleEntitlementStore` →
+  `DrizzleEntitlementRepository`, `DbExecutor` → `DatabaseExecutor`. This was the real
+  violation: core code was importing `drizzle-orm` and `db/client` directly. `src/core`
+  now imports neither.
+- `core/entitlements/memory-store.ts` → **`test/support/in-memory-entitlement-repository.ts`**;
+  `MemoryEntitlementStore` → `InMemoryEntitlementRepository`. A test double no longer
+  ships in a production feature folder or its barrel.
+- Verb-first port method names: `activeEntitlement` → `findActiveEntitlement`,
+  `usageInWindow` → `getUsageInWindow`, `usageOnLocalDate` → `countUsageOnLocalDate`,
+  `insertUsage` → `recordUsage`, `transaction` → `runInTransaction`, and on
+  `CapacityReader` (which M3/M5 will implement) `activeCategoryCount` →
+  `countActiveCategories`, `reminderCategoryCount` → `countReminderCategories`.
+- `core/entitlements/index.ts` is now a pure barrel — no wiring logic, no adapters.
+- The schema file was reviewed against CLAUDE.md's database-naming section and
+  needed no change (camelCase TS properties, snake_case tables/columns). It was not
+  moved in this commit; `phase-1`'s platform-wide restructure has since relocated the
+  whole `src/db/` tree, so it now lives at
+  `src/infrastructure/database/schema/entitlement.ts`.
+
+**Architectural conflicts flagged rather than resolved** (CLAUDE.md: report, don't
+silently choose; all of these need a repo-wide decision, not an M8-only change):
+
+1. **`gate()` vs CLAUDE.md's "Transactions" rule.** CLAUDE.md says core services
+   should not become generic over a Drizzle executor and that raw transaction handles
+   should not cross core-module boundaries — and names M8's `gate()` design as the
+   case to consider. `DefaultEntitlementService<X>` *is* generic over an executor `X`
+   and hands it to the caller's `write(executor)`. Core never imports a Drizzle type
+   (`X` is fully abstract, which is why the in-memory test double can supply a plain
+   object), but in production `X` is a Drizzle transaction handle passed to M3/M5.
+   This is the only design that satisfies M8's own invariant — "capacity checks are
+   atomic with the domain write they gate" — without one of CLAUDE.md's three
+   alternatives (a technology-independent transaction contract, an orchestration
+   service, or an explicit operation on M3/M5's contracts). Deciding between them
+   changes a contract M3/M5 will build against, so it needs a call before those
+   modules land, not a unilateral rewrite here.
+2–5. **The four structural deferrals — `core/ports/{common,clock}.ts` outside
+   `core/shared/`, `src/db/` outside `src/infrastructure/database/`, `src/core/domain/`
+   as a dumping ground, and `src/core/testing/test-clock.ts` inside production `src/` —
+   have all been resolved on `phase-1`** by the platform-wide restructure recorded
+   above. Each was flagged here rather than fixed because it was a repo-wide refactor,
+   which is exactly how it was eventually done. Nothing is outstanding from this list;
+   see the merge note below for how M8 was rewired onto the new paths.
+
+---
+
+## M8 ← phase-1 merge — 2026-09-07
+
+Merging `phase-1` back into the M8 branch (PR #3). `phase-1` had meanwhile landed M2
+and the platform-wide CLAUDE.md restructure, so this merge is mostly M8 catching up to
+the new tree. No M8 behaviour changed.
+
+### Conflicts and how they were resolved
+
+- **`src/core/entitlements/entitlement-service.ts`** — rename/delete. M8 deleted
+  `core/ports/entitlement-service.ts` and wrote the real contract at the new path;
+  `phase-1` independently *renamed* the old stub to that same path. Took M8's version
+  (a strict superset: `EntitlementRefusal`, `CapacityCounts`, the richer
+  `DowngradeEligibility`), repointed at `../shared/common`.
+- **`src/core/entitlements/index.ts`** — took M8's barrel; `phase-1`'s was still the
+  pre-implementation stub that only re-exported four types.
+- **`src/core/ports/index.ts`** — took `phase-1`'s. It is now trimmed to
+  `category-service` + `reminder-selection-service` (M3/M5-owned, deliberately parked
+  there); M8's edit to that file only removed the entitlement re-export, which
+  `phase-1` had already done.
+- **`docs/build-log.md`** — purely additive collision; both sections kept, and the four
+  now-obsolete structural deferrals in M8's entry rewritten (see above).
+
+### Rewired onto the restructured tree (clean merges, broken imports)
+
+Git merged these without conflict but they still pointed at the pre-restructure paths:
+
+- `core/entitlements/{billing,default-entitlement-service,entitlement-repository,limits,local-time,messages}.ts`
+  — `../ports/common` → `../shared/common`, `../ports/clock` → `../shared/clock`.
+- `infrastructure/database/repositories/drizzle-entitlement-repository.ts` —
+  `../../../db/client` → `../client`, `../../../db/schema/entitlement` →
+  `../schema/entitlement`, `../../../core/ports/common` → `../../../core/shared/common`.
+- `test/support/in-memory-entitlement-repository.ts`, `test/unit/entitlements/harness.ts`,
+  `test/integration/entitlements.test.ts` — `core/ports/common` → `core/shared/common`,
+  `src/core/testing/test-clock` → `test/support/test-clock`, `src/db/client` →
+  `src/infrastructure/database/client`.
+
+### Open question 1 closed
+
+M2 has merged, so `appUser` is exported from
+`infrastructure/database/schema/identity.ts`. The `@ts-expect-error` and its
+`TODO(M2 merge order)` block are deleted from the entitlement schema, exactly as that
+TODO instructed.
+
+### Still open after this merge
+
+- **No migration for `entitlement` / `usage_counter`.** `migrations/0000_identity.sql`
+  and its snapshot cover only M2's two tables. `npm run db:generate` will emit the M8
+  tables as a new forward-only migration; deliberately left to its own commit rather
+  than folded into a conflict resolution.
+- **No composition-root wiring.** `src/index.ts` never constructs
+  `DrizzleEntitlementRepository` / `createEntitlementService`. That is M7's wiring pass.
+- **`gate()` vs CLAUDE.md's "Transactions" rule** (conflict 1 above) is unchanged and
+  still needs a call before M3/M5 build against it.
