@@ -8,6 +8,12 @@ CI (`.github/workflows/ci.yml`) creates a throwaway Neon branch per PR, applies 
 committed Drizzle migrations to it, runs `npm run test:integration`, then deletes the
 branch. Locally, point `DATABASE_URL` at a scratch branch and run the same script.
 
-Empty this pass — `vitest` is configured with `passWithNoTests`. The first real
-cases arrive with M2 (idempotent `register`/`resolve`, cascade delete) and the
-M3/M4 pair (period race, money boundary, archive eligibility).
+Suites here `describe.skip` themselves when `DATABASE_URL` is unset, so `npm test`
+stays green locally without a database — they are skipped, never faked.
+
+- `identity.test.ts` (M2): concurrent `register` race against the
+  `(channel, external_id)` unique constraint, the conditional once-only timezone
+  write, settings round-trip, check constraints, cascade delete. Cascade coverage is
+  `channel_connection` only until later modules add their tables — extend the
+  assertion there as they land.
+- M3/M4 pair (period race, money boundary, archive eligibility) — to come.

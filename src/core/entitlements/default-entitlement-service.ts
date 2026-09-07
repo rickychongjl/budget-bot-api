@@ -1,5 +1,5 @@
-import type { Clock } from '../ports/clock';
-import type { Instant, Tier, UserId } from '../ports/common';
+import type { Clock } from '../shared/clock';
+import type { Instant, Tier, UserId } from '../shared/common';
 import {
   EntitlementRefusal,
   type AdmissionResult,

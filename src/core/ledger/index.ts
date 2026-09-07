@@ -1,11 +1,23 @@
 /**
  * M3 — Categories & Ledger (Phase 2, coordinated with M4).
  *
- * Implements `LedgerService` (`core/ports/ledger-service.ts`) against
- * `db/schema/category.ts` + `db/schema/transaction.ts`. Owns recording/correcting/
+ * Implements `LedgerService` (`./ledger-service.ts`) against
+ * `infrastructure/database/schema/category.ts` +
+ * `infrastructure/database/schema/transaction.ts`. Owns recording/correcting/
  * deleting transactions, category archive (gated on no-transactions-this-cycle),
  * money representation, history. `exportCsv` is deferred this pass.
  *
- * Empty until the M3 agent's PR.
+ * The contract below is fixed; `DefaultLedgerService` and the repository
+ * implementation are empty until the M3 agent's PR.
  */
-export {};
+export type {
+  LedgerService,
+  Page,
+  PageRequest,
+  ParseRoute,
+  Transaction,
+  TransactionDirection,
+  TransactionPatch,
+  TransactionStatus,
+  ValidatedCandidate,
+} from './ledger-service';

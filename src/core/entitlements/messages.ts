@@ -1,4 +1,4 @@
-import type { Tier } from '../ports/common';
+import type { Tier } from '../shared/common';
 import type { CapacityCounts } from './entitlement-service';
 
 /**

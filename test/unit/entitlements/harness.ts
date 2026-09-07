@@ -1,5 +1,5 @@
-import { TestClock } from '../../../src/core/testing/test-clock';
-import type { UserId } from '../../../src/core/ports/common';
+import { TestClock } from '../../support/test-clock';
+import type { UserId } from '../../../src/core/shared/common';
 import { InMemoryEntitlementRepository } from '../../support/in-memory-entitlement-repository';
 import { createEntitlementService } from '../../../src/core/entitlements/default-entitlement-service';
 import type { EntitlementLimits } from '../../../src/core/entitlements/limits';

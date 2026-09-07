@@ -124,14 +124,15 @@ src/
         drizzle-entitlement-repository.ts
         drizzle-ledger-repository.ts
 
+    llm/
+      openai-parser.ts
+
+  channels/
     telegram/
       webhook-handler.ts
       update-parser.ts
       command-router.ts
       telegram-message-sender.ts
-
-    llm/
-      openai-parser.ts
 
   parsing/
   observability/
@@ -156,6 +157,8 @@ test/
 ```
 
 Existing files do not need to be moved solely to match this structure. Move them only as part of an explicitly approved architectural refactor.
+
+`channels/telegram/` is a deliberate, approved exception to the general infrastructure-lives-under-`infrastructure/` rule below. It is Telegram-specific infrastructure code in every other respect (webhook handling, message sending, Telegram SDK types) — it just keeps its own top-level folder rather than nesting under `infrastructure/`, matching this project's existing channel-adapter convention. Do not "fix" this by moving it under `infrastructure/telegram/`.
 
 ## Core modules
 
@@ -488,10 +491,11 @@ app.post('/telegram/webhook', async (context) => {
 });
 ```
 
-Command parsing and routing belong under:
+Command parsing and routing belong under (see the approved `channels/telegram/`
+exception in "Target project structure" above):
 
 ```text
-infrastructure/telegram/
+channels/telegram/
 ```
 
 ## Naming conventions

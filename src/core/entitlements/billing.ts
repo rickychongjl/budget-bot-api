@@ -1,4 +1,4 @@
-import type { Instant, Tier, UserId } from '../ports/common';
+import type { Instant, Tier, UserId } from '../shared/common';
 
 /**
  * Telegram Stars purchase / renewal / refund — Phase 2 (master plan §3, M8 "Out of

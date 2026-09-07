@@ -1,4 +1,4 @@
-import type { Tier } from '../ports/common';
+import type { Tier } from '../shared/common';
 
 /**
  * Agreed tier limits — `docs/M8-entitlements-limits.md`, 5 Sep 2026. Settled policy,

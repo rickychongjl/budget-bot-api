@@ -10,7 +10,7 @@
 ## Depends on
 - **M1** for schema conventions, `Clock` port, and the `IdentityService` interface stub to fill in.
 - **M4**'s finalized `period_anchor_date` contract (step 3 of onboarding collects exactly this value — see M4's plan before wiring this). Monthly-only now (M4 round-3 revert), so there's no separate period-*type* value to collect.
-- **M3** and **M8** during onboarding step 5 (creating multiple categories+caps, checked against tier capacity) and step 6 (reminder category selection, checked against tier capacity) — onboarding now actively calls into these modules mid-flow, not just after.
+- **M3, M4, and M8** during onboarding step 4 (creating categories and budgets, checked against tier capacity), and **M5/M8** during optional step 5 reminder selection — onboarding actively calls these modules mid-flow, not just after.
 
 ## Depended on by
 - **M7** resolves every inbound message to an internal user via this module before routing anywhere else.
@@ -36,7 +36,7 @@
 ```sql
 create table app_user (
   id                   uuid primary key default gen_random_uuid(),
-  timezone             text        not null,               -- IANA, e.g. 'Australia/Brisbane'
+  timezone             text        not null,               -- IANA after step 1; '' is internal pre-onboarding state
   currency_code        char(3)     not null default 'AUD',
   -- Round 3 (5 Sep): M4 reverted to monthly-only, so the round-2 period_type
   -- column is dropped. period_anchor_date survives as the sole cycle setting —
@@ -47,6 +47,8 @@ create table app_user (
   reminder_local_time  time        not null default '07:00',   -- changed from 08:00, 5 Sep
   status               text        not null default 'active'
                                    check (status in ('active','suspended','deleted')),
+  onboarding_step      text        not null default 'timezone'
+                                   check (onboarding_step in ('timezone','currency','anchor_date','categories','reminders','done')),
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now(),
   deleted_at           timestamptz
@@ -89,8 +91,8 @@ interface IdentityService {
 1. **Timezone.** Curated short list of Australian IANA zones as inline buttons, **plus a full IANA search for anything else** (this was "somewhere else" free text before; it's now an actual search, not just a fallback). Asked first, cannot be skipped.
 2. **Currency.** Default AUD, confirmed with one tap.
 3. **Budget start date.** The anchor date for the user's monthly budget cycle — this becomes `periodAnchorDate` and is handed to M4. (Round 2 had a separate step 4 here for choosing monthly/fortnightly/weekly; that's gone now that M4 is monthly-only — see the note below.)
-4. **Fill in budget categories and caps.** No longer just one category — the user adds as many as they want, each with an optional cap, up to their tier's limit (10 Free / 30 Premium). **Pre-seed one obvious starter category — "Food"** (round 3: Rent/Mortgage and Utilities dropped, per Ricky) — rather than a blank slate, which the user can accept, edit, or delete before or during this step. Handed to M3/M4.
-5. **Reminder category selection.** Pick which category (or categories: 1 Free / up to 5 Premium) gets the daily allowance reminder. **No custom reminder time this pass** — every user gets a single fixed 07:00 local send (see M5); this step is purely about which category(s), not when.
+4. **Fill in budget categories and caps.** No longer just one category — the user adds as many as they want, each with an optional cap, up to their tier's limit (10 Free / 30 Premium). **Pre-seed one obvious starter category — "Food"** (round 3: Rent/Mortgage and Utilities dropped, per Ricky) — rather than a blank slate, which the user can accept, rename, or delete before or during this step. The user cannot continue until there is at least one category and at least one active category budget. Handed to M3/M4.
+5. **Optional reminder category selection.** The user may pick categories (up to 1 Free / 5 Premium) for the daily allowance reminder, or finish with none. **No custom reminder time this pass** — every enabled reminder uses a single fixed 07:00 local send (see M5); this step is purely about which category(s), not when.
 
 A returning user who sends `/start` again gets a summary of their settings, not a new account — unchanged.
 
@@ -103,9 +105,9 @@ Ricky's round-3 message asked me to "confirm M2 onboarding is 6 steps now." I ca
 ---
 
 ## Task checklist
-1. Migration for `app_user` + `channel_connection` in `db/schema/identity.ts`.
+1. Migration for `app_user` + `channel_connection` in `infrastructure/database/schema/identity.ts`.
 2. Implement `resolve` / `register` — enforce idempotency via the `(channel, external_id)` unique constraint, not an application-level check-then-insert.
-3. Implement the 5-step onboarding state machine backing `/start` (see "Onboarding" section above): timezone → currency → budget start date → categories+caps (multiple, "Food" pre-seeded, up to tier limit) → reminder category selection. This module collects and hands off values to M3/M4/M8; it doesn't create categories or budgets itself. A returning user who re-sends `/start` gets a settings summary, not a new account.
+3. Implement the 5-step onboarding state machine backing `/start` (see "Onboarding" section above): required timezone → currency → budget start date → at least one category with a budget ("Food" pre-seeded, up to tier limit) → optional reminder category selection. This module collects and hands off values to M3/M4/M5/M8; it doesn't write their tables itself. A returning user who re-sends `/start` gets a settings summary, not a new account. Persist `onboarding_step` so the flow resumes across stateless Worker invocations.
 4. **Enforce timezone immutability in this module's write path, not just the Telegram UI.** `setInitialTimezone` succeeds once; every later attempt — via `updateSettings`, a forged callback, or a repeated `/start` — is rejected with `TIMEZONE_IMMUTABLE`. An idempotent replay of the *same* value is not a rejected change. Remove `timezone` from the mutable-settings type entirely so it can't even be attempted through the normal patch path.
 5. Implement settings mutation rules:
    - `period_anchor_date` — changing it is a pure re-bucketing of history (periods are derived, not stored — see M4), no data rewrite needed here. (Unchanged in spirit from the original `period_start_day` rule; just applies to the new field.)
@@ -118,6 +120,8 @@ Ricky's round-3 message asked me to "confirm M2 onboarding is 6 steps now." I ca
 - Exactly one `app_user` per `(channel, external_id)` — enforced by the DB constraint, never by an app-level race-prone check.
 - `register` is idempotent.
 - Once timezone is set it cannot change, through any path, ever, including re-run onboarding.
+- `timezone` is non-null in storage. A newly registered user temporarily has `''` while `onboarding_step = 'timezone'`; no service may expose or use that sentinel as an operational timezone, and onboarding cannot advance until it is replaced with a valid IANA zone.
+- Onboarding cannot complete without at least one category and an active budget for at least one category. Reminder categories are optional.
 - No module outside M2 reads `channel_connection` to make a business decision — M7 reads it only to find a `chat_id`.
 - Every timestamp written anywhere in the system is UTC; local dates are derived at write time using this module's timezone.
 

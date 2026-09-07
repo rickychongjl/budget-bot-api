@@ -1,6 +1,6 @@
 import { and, count, eq, gt, sql } from 'drizzle-orm';
-import type { Database } from '../../../db/client';
-import { entitlement, usageCounter } from '../../../db/schema/entitlement';
+import type { Database } from '../client';
+import { entitlement, usageCounter } from '../schema/entitlement';
 import type {
   EntitlementReads,
   EntitlementRepository,
@@ -10,7 +10,7 @@ import type {
   UserLockScope,
   WindowUsage,
 } from '../../../core/entitlements/entitlement-repository';
-import type { Instant, LocalDate, UserId } from '../../../core/ports/common';
+import type { Instant, LocalDate, UserId } from '../../../core/shared/common';
 
 /**
  * Either the root Drizzle handle or a transaction handle — the executor other

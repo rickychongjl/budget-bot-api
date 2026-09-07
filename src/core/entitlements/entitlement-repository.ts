@@ -1,4 +1,4 @@
-import type { Instant, LocalDate, Tier, UserId } from '../ports/common';
+import type { Instant, LocalDate, Tier, UserId } from '../shared/common';
 
 /**
  * M8's outgoing ports — what the entitlements module needs from the outside world.

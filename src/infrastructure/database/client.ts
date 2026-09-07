@@ -7,7 +7,7 @@ import * as schema from './schema';
  * over a Hyperdrive connection string, wrapped in Drizzle. NOT the Neon serverless
  * driver — Hyperdrive and the serverless driver are alternatives, not layers.
  *
- * Repositories take a `Database`; nothing in `core/domain` ever sees this handle
+ * Repositories take a `Database`; nothing in `core/` ever sees this handle
  * (M1 §4 / master plan §6, rule 3).
  */
 export type Database = ReturnType<typeof createDatabase>;

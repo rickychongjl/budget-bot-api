@@ -10,11 +10,6 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-// TODO(M2 merge order): `appUser` lands with M2's PR (`app_user`, uuid PK). Until that
-// merges this import has no exported member and the directive below keeps the rest of
-// the tree typechecking. After rebasing onto M2, DELETE the `@ts-expect-error` line —
-// tsc will flag it as an unused directive, so the cleanup cannot be forgotten.
-// @ts-expect-error -- M2's `appUser` table is not yet exported from ./identity (see TODO above)
 import { appUser } from './identity';
 
 /**

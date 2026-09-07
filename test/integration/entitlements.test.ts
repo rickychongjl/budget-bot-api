@@ -1,13 +1,13 @@
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createDatabase, type Database } from '../../src/db/client';
+import { createDatabase, type Database } from '../../src/infrastructure/database/client';
 import {
   DrizzleEntitlementRepository,
   type DatabaseExecutor,
 } from '../../src/infrastructure/database/repositories/drizzle-entitlement-repository';
 import { createEntitlementService } from '../../src/core/entitlements/default-entitlement-service';
 import type { CapacityReader } from '../../src/core/entitlements/entitlement-repository';
-import { TestClock } from '../../src/core/testing/test-clock';
+import { TestClock } from '../support/test-clock';
 
 /**
  * M8 against a real Neon branch (M1 §7): the `(user_id, message_id)` primary key and

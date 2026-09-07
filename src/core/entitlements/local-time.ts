@@ -1,4 +1,4 @@
-import type { Instant, LocalDate } from '../ports/common';
+import type { Instant, LocalDate } from '../shared/common';
 
 /**
  * IANA-timezone helpers for the daily-quota boundary (M8: "midnight in the user's

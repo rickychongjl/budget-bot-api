@@ -1,4 +1,4 @@
-import type { Instant, LocalDate, UserId } from '../../src/core/ports/common';
+import type { Instant, LocalDate, UserId } from '../../src/core/shared/common';
 import type {
   EntitlementRepository,
   EntitlementRow,
