@@ -1031,3 +1031,40 @@ resolved. `npm test` 174 passed / 9 skipped. `npm run test:integration` 4 passed
 9 skipped — the 9 are M2's and M8's identity/entitlements suites, which need
 `DATABASE_URL`; **they were not executed.** The live-LLM eval is still unmeasured (no
 `OPENAI_API_KEY`).
+
+## M9 — `logging-rules` source scan removed — 2026-09-08
+
+**Branch:** `phase-1` · **Commit:** `8b07fb1`
+
+`test/unit/logging-rules.test.ts` is gone. It was M6's automated take on M9 checklist
+item 2 — a source scan asserting that only `observability/log.ts` and `index.ts` call
+`console.*`, that no secret binding (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`,
+`INTERNAL_DISPATCH_SECRET`, `OPENAI_API_KEY`, `DATABASE_URL`) is interpolated into a
+string or handed to the logger, and that `parse_event`'s column list is exactly the
+ten in M9's SQL with only `route`/`model` typed `text`.
+
+**Why it went.** It read the source tree with `node:fs`/`__dirname` while `@types/node`
+is not a declared devDependency, which is where all four of the standing `typecheck`
+errors recorded in the two M6 entries above came from. Its schema assertion also
+restated what the committed migration `0002_dashing_tempest.sql` and
+`test/integration/parse-event-fk.test.ts` already pin against a real database. What it
+uniquely covered — the `console.*` and secret-interpolation scans — is lint work
+wearing a test's clothes.
+
+**What this changes.** Nothing about M9's rules. `parse_event` still holds no message
+text and no log line may carry a token, secret, channel identifier, or raw message
+content; those invariants are now upheld at review time rather than by a test.
+`docs/M9-observability-privacy-retention.md` checklist item 2 records this, and notes
+that re-automating it belongs in an ESLint `no-console` rule with an allowlist.
+`src/observability/log.ts` and its unit test `test/unit/log.test.ts` — redaction,
+truncation, flat-field formatting — are untouched.
+
+**Supersedes:** the `logging-rules` references in the two M6 entries above. Those
+entries stand as the record of what was true at the time; the four `node:fs` /
+`__dirname` / implicit-any `typecheck` errors they document no longer exist.
+
+**Verification:** `npm run typecheck` — clean, 0 errors. `npm test` 171 passed /
+9 skipped across 16 files (2 skipped), down from 174/9 because the three removed
+assertions were this file's. `npm run test:integration` 4 passed / 9 skipped — the 4
+are `parse-event-fk.test.ts` on PGlite; the 9 are M2's and M8's identity/entitlements
+suites, which need `DATABASE_URL` and **were not executed**.
