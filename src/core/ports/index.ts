@@ -10,12 +10,14 @@
  * `LlmParser` → `parsing`, `Clock`/shared primitives → `core/shared`. `IdentityService`
  * / `ChannelConnectionDirectory` (M2's own) already live in `core/identity`.
  *
- * What's left is the two contracts M2 proposed but doesn't own (each file's header
- * says why; build-log has the full note):
- *   CategoryService              M3-owned  category create/list/rename/archive — absent from LedgerService
+ * What's left is the one contract M2 proposed but doesn't own (the file's header says
+ * why; build-log has the full note):
  *   ReminderSelectionService     M5-owned  which categories carry the 07:00 reminder
- * They stay here — not dropped into another module's still-`export {}` stub folder —
- * until M3/M5 claim them as part of their own PRs.
+ * It stays here — not dropped into M5's still-`export {}` stub folder — until M5
+ * claims it as part of its own PR.
+ *
+ * `CategoryService` was the other one. M3 claimed it in the Phase 2 PR, so it now
+ * lives in `core/ledger/category-service.ts` with the module that owns the `category`
+ * table; import it from `core/ledger`.
  */
-export * from './category-service';
 export * from './reminder-selection-service';

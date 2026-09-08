@@ -1068,3 +1068,111 @@ entries stand as the record of what was true at the time; the four `node:fs` /
 assertions were this file's. `npm run test:integration` 4 passed / 9 skipped — the 4
 are `parse-event-fk.test.ts` on PGlite; the 9 are M2's and M8's identity/entitlements
 suites, which need `DATABASE_URL` and **were not executed**.
+
+## M3 + M4 — Categories & Ledger, Budgets & Periods — 2026-09-08
+
+**Branch:** `phase-2`
+
+Phase 2's coupled pair, built as one PR because the schema coupling runs both ways
+(`transaction.budget_period_id` → `budget_period`, `budget.category_id` → `category`)
+and the master plan §4 says to treat them as one workstream. One migration,
+`0003_flashy_true_believers.sql`, carries all four tables.
+
+### Decisions taken
+
+1. **`transaction.category_name_snapshot` — skipped.** M3's plan proposed it and
+   explicitly said "confirm before shipping". Confirmed skipped: it exists only to
+   serve the deferred *real* category-removal feature, and a forward-only migration
+   that adds it now would be a column nothing reads. It arrives with that feature.
+2. **Atomicity across the M3/M4 boundary.** M3's checklist requires period resolution
+   and the ledger insert in one database transaction, while CLAUDE.md forbids passing
+   a Drizzle transaction handle across a core-module boundary. Resolved by reusing the
+   pattern M8 already established: both repositories are generic over an *executor*
+   type `X`, and M4 exposes `PeriodMaterialiser<X>.ensurePeriodForCategory(…, executor)`.
+   M3 opens the transaction, hands M4 the executor, and neither module names Drizzle.
+   In production `X` is the Drizzle transaction handle; in unit tests it is a shared
+   in-memory store whose `transaction()` snapshots and rolls back every table, which
+   is what makes the "no orphaned period" test real rather than decorative.
+   This is the concrete answer to CLAUDE.md's "should be considered when finalising
+   M8's `gate()` design" note — `gate` stayed off the public `EntitlementService`
+   port, and M3 declares the narrow `CategoryCapacityGate<X>` shape it needs instead.
+3. **`BudgetService.currentBudgets(userId, localDate)` added** for `/budget` with no
+   arguments (M4 checklist step 7). Returns the standing rule, the derived period and
+   the current snapshot cap — `null` when nothing has been materialised, which the
+   read treats as "the cap applies, nothing spent", never an error.
+4. **`CategoryService` claimed by M3.** It was parked in the temporary `core/ports/`
+   holding pen because M2 proposed it and M3 was a stub; it now lives in
+   `core/ledger/category-service.ts`. Added `findByName` (name→category resolution
+   through M3's own normalization instead of each caller re-implementing it),
+   `countActive` (the number M8's capacity check compares against the limit) and
+   `reactivate` (M8 already gated a `reactivate_category` action with nothing to call
+   it). The four original methods are unchanged, so M2's onboarding still compiles as
+   written. `core/ports/` is now down to M5's `ReminderSelectionService`.
+5. **`exportCsv` refuses with `NOT_YET_AVAILABLE`.** Deferred (round 5, Story 7); the
+   signature stays so M7 has something to stub `/export` against.
+
+### Shared code that moved (small, and each anticipated by the file it came from)
+
+- **`core/shared/local-date.ts`** — `localDateAt` plus the calendar arithmetic M3, M4,
+  M2 and M8 all need. M2's `timezones.ts` had flagged exactly this ("if M3/M4/M5 end
+  up needing `localDateAt` … it is a candidate for `core/shared`"). M2's `localDateAt`
+  / `isLocalDate` and M8's `localDateOf` / `addLocalDays` now delegate to it under
+  their existing names, so no public surface changed and no call site moved.
+- **`core/shared/errors.ts`** — `RefusalError`, moved from `core/identity/errors.ts`,
+  which said it belonged in `core/shared` "once M3/M8 throw the same class".
+  `core/identity/errors.ts` re-exports it.
+- **`UserSettings.accountCreatedOn`** — additive. M3 enforces the backdating floor
+  itself rather than trusting its caller, and M6's `UserParseContext` already expected
+  M7 to source `accountCreatedOn` from `getSettings`. Derived from `created_at` in the
+  user's own timezone; absent from `UserSettingsPatch` because it is not settable.
+- **`normaliseName`** in M2's onboarding now delegates to M3's `normalizeCategoryName`
+  — one definition of what makes two category names the same name.
+
+### Assumptions worth flagging
+
+- **`setCap` does not verify the category exists or is unarchived.** The caller
+  resolves a name through M3 first and the FK is the backstop; M4 reading M3's table
+  to re-check would violate master plan §2 rule 2. If `/budget` on an archived
+  category turns out to need a friendlier refusal, that check belongs in M7's command
+  handler or in a small addition to M3's contract, not in M4.
+- **M3 re-derives `occurred_on` from `occurred_at` + timezone** and ignores the
+  candidate's own copy. M6 sets `occurredAt` to local noon of the date it resolved, so
+  the two always agree today; if they ever stop agreeing, the timezone is authority.
+- **M5's notifications are optional dependencies** (`AllowanceNotifier`), omitted in
+  wiring until Phase 3. `ledgerChanged` failures are swallowed on purpose — the ledger
+  is the system of record and a reminder is a downstream effect.
+- **`src/index.ts` is still not the composition root.** M3/M4 add no routes, and the
+  existing deviation (`createParsingPipeline` parked under `infrastructure/`) is
+  already logged as M7's to fix. The intended wiring is written out in each module's
+  `index.ts` header, and `test/integration/ledger-budgets.test.ts` composes the real
+  services over the real repositories, so it is exercised rather than merely described.
+- **`src/parsing/dates.ts` still keeps M6's own `localDateAt` / `addDays` /
+  `compareLocalDates`.** Folding those into `core/shared/local-date.ts` is a sensible
+  follow-up but it is M6's code, and CLAUDE.md says not to combine a rename sweep with
+  a feature change.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors. `npm test` — **293 passed / 9 skipped** across
+22 files (up from 171/9): 4 new suites (`test/unit/budgets/period.test.ts`,
+`test/unit/budgets/default-budget-service.test.ts`, `test/unit/ledger/{transaction-validation,
+category-service,default-ledger-service}.test.ts`) plus
+`test/integration/ledger-budgets.test.ts`.
+
+`npm run test:integration` — 20 passed / 9 skipped. The 20 are the PGlite suites
+(`parse-event-fk`, `ledger-budgets`), which need no database. **The 9 skipped are M2's
+and M8's identity/entitlements suites, which need `DATABASE_URL` and were not
+executed.**
+
+`npm run db:generate` — `0003_flashy_true_believers.sql` generated, inspected and
+committed with its snapshot.
+
+`test/unit/scaffold.test.ts` no longer asserts that `periodFor` throws "not
+implemented" — it landed. `computeDailyTarget` (M5) is the last stub that file guards.
+
+One production behaviour changed while making the integration suite run on PGlite:
+`DrizzleLedgerRepository` reads the tripped constraint from **both**
+`constraint_name` (`postgres.js`, production over Hyperdrive) and `constraint`
+(PGlite). Reading only one meant a duplicate category name surfaced as a raw Postgres
+error rather than the typed `DuplicateCategoryNameError` under whichever driver was
+not covered.

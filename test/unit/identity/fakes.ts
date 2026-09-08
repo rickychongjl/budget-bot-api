@@ -1,13 +1,26 @@
 import { RefusalError } from '../../../src/core/identity';
-import type { Budget, BudgetPeriod, BudgetService, Period } from '../../../src/core/budgets';
+import type {
+  Budget,
+  BudgetPeriod,
+  BudgetService,
+  BudgetView,
+  Period,
+} from '../../../src/core/budgets';
 import type {
   DowngradeEligibility,
   EntitlementService,
   GatedAction,
 } from '../../../src/core/entitlements';
-import type { LedgerService, Page, PageRequest, Transaction } from '../../../src/core/ledger';
-import type { Category, CategoryService, ReminderSelectionService } from '../../../src/core/ports';
-import type { CurrencyCode, Id, MinorUnits, Tier, UserId } from '../../../src/core/shared/common';
+import type {
+  Category,
+  CategoryService,
+  LedgerService,
+  Page,
+  PageRequest,
+  Transaction,
+} from '../../../src/core/ledger';
+import type { ReminderSelectionService } from '../../../src/core/ports';
+import type { CurrencyCode, Id, LocalDate, MinorUnits, Tier, UserId } from '../../../src/core/shared/common';
 
 /**
  * Minimal fakes for the ports M2 calls. Each enforces just the rule M2's tests care
@@ -138,10 +151,26 @@ export class FakeCategories implements CategoryService {
     return row;
   }
 
+  async findByName(userId: UserId, name: string): Promise<Category | null> {
+    const normalizedName = name.trim().toLowerCase().replace(/\s+/g, ' ');
+    return this.rows.find((c) => c.userId === userId && c.normalizedName === normalizedName) ?? null;
+  }
+
+  async countActive(userId: UserId): Promise<number> {
+    return this.rows.filter((c) => c.userId === userId && !c.isArchived).length;
+  }
+
   async archive(userId: UserId, categoryId: Id): Promise<void> {
     const row = this.rows.find((c) => c.userId === userId && c.id === categoryId);
     if (!row) throw new RefusalError('CATEGORY_NOT_FOUND');
     row.isArchived = true;
+  }
+
+  async reactivate(userId: UserId, categoryId: Id): Promise<Category> {
+    const row = this.rows.find((c) => c.userId === userId && c.id === categoryId);
+    if (!row) throw new RefusalError('CATEGORY_NOT_FOUND');
+    row.isArchived = false;
+    return row;
   }
 
   /** Cascade helper for delete tests. */
@@ -163,6 +192,11 @@ export class FakeBudgets implements BudgetService {
 
   async activeBudgets(userId: UserId): Promise<readonly Budget[]> {
     return this.rows.filter((b) => b.userId === userId && b.isActive);
+  }
+
+  /** M2 never renders `/budget`; present only to satisfy the port. */
+  async currentBudgets(_userId: UserId, _localDate: LocalDate): Promise<readonly BudgetView[]> {
+    throw new Error('not used');
   }
 
   async setCap(userId: UserId, categoryId: Id, cap: MinorUnits): Promise<Budget> {

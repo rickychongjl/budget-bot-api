@@ -5,6 +5,19 @@
 **One-line scope:** The system of record for what the user spent. Every confirmed transaction enters through this module; nothing else writes to the ledger.
 **Reconciled 5 Sep:** the category-removal/capacity loophole is now **fully resolved** (round 4) — see "Category removal" below for the final mechanism. Multiple-transaction and retention open items confirmed as originally scoped; backdating floor is **confirmed** (round 3: account creation date). **Round 5: `/export` (CSV export) is deferred** — Ricky's marked it out of scope for this pass (Story 7, per M11). `exportCsv` is not built this build; see "Money" area below and the task checklist.
 
+**Build status (8 Sep 2026, `phase-2` branch):** built, together with M4 in one PR.
+Every checklist item below is done except `exportCsv`, which is deferred by design.
+Decisions taken while building, all recorded in `docs/build-log.md`:
+- **`category_name_snapshot` is not in the migration** — the plan flagged it as a
+  proposal to confirm before shipping; confirmed *skipped*. It arrives with the
+  deferred real-removal feature that actually needs it.
+- `CategoryService` moved out of the temporary `core/ports/` holding pen into
+  `core/ledger/`, and gained `findByName`, `countActive` and `reactivate`.
+- `RefusalError` moved from `core/identity/errors.ts` to `core/shared/errors.ts`, as
+  M2's own header anticipated once a second module threw it.
+- `UserSettings` gained `accountCreatedOn` so M3 can enforce the backdating floor
+  without reading `app_user`.
+
 ---
 
 ## Depends on

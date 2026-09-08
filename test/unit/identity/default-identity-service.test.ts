@@ -153,7 +153,7 @@ describe('getSettings', () => {
     await expect(identity.getSettings(userId)).rejects.toMatchObject({ code: 'ONBOARDING_REQUIRED' });
   });
 
-  it('returns the four-field contract with 07:00 and AUD defaults', async () => {
+  it('returns the settings contract with 07:00 and AUD defaults', async () => {
     const { userId } = await identity.register('telegram', '1', '1');
     await identity.setInitialTimezone(userId, 'Australia/Hobart');
     expect(await identity.getSettings(userId)).toEqual({
@@ -161,6 +161,8 @@ describe('getSettings', () => {
       currencyCode: 'AUD',
       periodAnchorDate: null,
       reminderLocalTime: '07:00',
+      // Derived from `created_at` in the user's own timezone — M3's backdating floor.
+      accountCreatedOn: '2026-09-06',
     });
   });
 
