@@ -15,6 +15,13 @@
       "when": 1788782432557,
       "tag": "0001_yellow_black_crow",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788868051689,
+      "tag": "0002_dashing_tempest",
+      "breakpoints": true
     }
   ]
 }

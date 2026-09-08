@@ -725,3 +725,309 @@ TODO instructed.
   `DrizzleEntitlementRepository` / `createEntitlementService`. That is M7's wiring pass.
 - **`gate()` vs CLAUDE.md's "Transactions" rule** (conflict 1 above) is unchanged and
   still needs a call before M3/M5 build against it.
+
+## M6 — NLP Parsing & Merchant Memory (+ M9 fixed pieces) — 2026-09-06
+
+**Branch:** `worktree-agent-acb0c43fa675c8134` · **Phase:** 1
+
+### Built
+
+- **M9 fixed pieces first.** `src/db/schema/observability.ts` now holds `parse_event`
+  exactly per M9's SQL: uuid PK, nullable `user_id` → `app_user(id) on delete set
+  null`, `route text check (…in ('command','mechanical','mapping','llm'))`, token
+  counts / latency / two booleans, `timestamptz` `created_at`, index
+  `parse_event_created`. There is deliberately no text column, and
+  `test/unit/logging-rules.test.ts` asserts the column list so one can't be added
+  quietly. `drizzle-kit generate` was run once locally against a throwaway
+  `app_user` stub (not committed — see Open questions 1) and produced the doc's DDL
+  verbatim, including both FK actions.
+- **`src/db/schema/merchant.ts`** — `merchant_category_mapping` per M6's schema block
+  (`unique (user_id, normalized_merchant)`, `source` check limited to
+  `user_confirmed | user_corrected`, `times_used`, `created/updated/last_used_at`),
+  plus the one barrel line in `db/schema/index.ts` (M1 open question 1 — resolved as
+  M1 suggested). `category_id` has no Drizzle-level FK yet because M3's `category`
+  doesn't exist (Open questions 3).
+- **Pipeline components under `src/parsing/`**, one per stage (M6 checklist 2):
+  `MessageNormalizer` (`IMessageNormalizer`), `MechanicalTransactionParser`
+  (`IMechanicalTransactionParser`: amounts as decimal *text*, AU day-first dates and
+  relative expressions, currency tokens, income/refund/correction markers, the
+  merchant-memory key), `DrizzleMerchantMappingRepository`
+  (`IMerchantMappingRepository` — its only write method is `saveConfirmed`; there is
+  no way to express "save an LLM guess"), `OpenAiLlmTransactionParser`
+  (`ILlmTransactionParser` = M1's `LlmParser` port, `openai.responses.parse`,
+  `model: "gpt-5.4-nano"`, `reasoning: { effort: "none" }`, `zodTextFormat` over a
+  Zod schema that is the LLM contract field-for-field, strict), and
+  `TransactionCandidateValidator` (`ITransactionCandidateValidator`: currency =
+  user's, amount scale vs exponent, extractor conflicts, date validity / future /
+  account floor, category resolution by name or id).
+- **`TransactionParsingPipeline`** (`pipeline.ts`) — the routing is the doc's
+  illustrative code in shape (explicit income + one amount → record; one amount →
+  mapping hit → record; else LLM), preceded by *mechanical guards* that never need a
+  model: correction intent, several amounts (→ "ask to split", never auto-split, never
+  sent to the model), decimal comma, foreign currency, impossible date. Every
+  route passes the validator; LLM results then go through a three-tier confidence
+  policy (record ≥ 0.85 / confirm ≥ 0.5 / clarify — `DEFAULT_POLICY`, overridable,
+  and explicitly *not* tuned yet). `LedgerService.record` and
+  `DailyAllowanceService.availableToday(userId, categoryId)` are called at the port
+  level only. `createParsingPipeline({ db, clock, openAiApiKey, ledger, allowance })`
+  is the production wiring for M7.
+- **Merchant-mapping lifecycle:** a `recorded` LLM outcome may carry a
+  `mappingProposal` ("Always categorise X as Y?"); it becomes a row only via
+  `pipeline.confirmMerchantMapping(userId, proposal, 'user_confirmed' |
+  'user_corrected')`. Proposals are keyed on *what the user typed* (the residual
+  description), not the model's tidied merchant name, so the next identical message
+  hits memory. No proposal, no application of an existing mapping, and a refusal even
+  on explicit confirmation for merchants in `multi-category-merchants.ts` (Amazon,
+  eBay, Kmart, Target, Big W, …).
+- **`parse_event` instrumentation:** exactly one row per `parse()`, including every
+  failure path (refusal / incomplete / API error still record model + tokens +
+  latency where known). Route is `mechanical` for guard clarifications (no model was
+  called), `mapping`/`llm` otherwise. `ParseEventCorrectionHook.onTransactionCorrected
+  (parseEventId)` is the seam for M3's `correct()`; the pipeline and
+  `DrizzleParseEventRepository` both implement it, and every `ParseOutcome` carries
+  `parseEventId`.
+- **Money helpers filled in** (`core/domain/money.ts`: `minorUnitExponent`,
+  `toMinorUnits`, `formatMinorUnits`) — bigint only, rejects `82.404` for AUD with
+  `MoneyError('SCALE_EXCEEDS_EXPONENT')`. The scaffold test's "toMinorUnits throws"
+  guard was removed accordingly.
+- **`src/observability/log.ts`** — the tiny structured logger the LLM parser uses:
+  flat primitive fields only, 200-char truncation, bot-token/`sk-` redaction.
+- **Eval set v1** — `test/eval/cases.v1.ts`, **158 cases** across mapping hits, AU
+  currency forms, dates, explicit income, multiple amounts, corrections, foreign
+  currency, unknown/multi-category merchants, server-side validation of model
+  output, LLM failure modes, refunds, typos/shorthand, no-amount messages.
+  `deterministic.eval.test.ts` runs the whole pipeline with a scripted model and
+  prints the pass rate per tag; **measured 158/158 = 100.0%** (first run was 152/158;
+  the six were two extractor bugs, two guard-ordering issues, and two mislabels —
+  all fixed before the baseline was set) and ratcheted in `baseline.json`. It also
+  asserts on every case: one `parse_event`, no message word in its values, no
+  mapping written, nothing recorded for multi-amount messages, and the LLM context
+  is exactly `{categoryNames, currencyCode}`. `live-llm.eval.test.ts` scores real
+  GPT-5.4 nano on the 60 `live`-labelled cases and prints field accuracy +
+  confidence percentiles; skipped without `OPENAI_API_KEY`.
+- **Tests:** 71 pass, 1 skipped (the live eval). Unit: money, normalizer/dates incl.
+  Sydney DST, mechanical parser, validator, pipeline lifecycle, OpenAI parser driven
+  through a fake `fetch` (asserts the exact request body: model, effort, strict
+  schema, and that the input is only currency + category names + message), logger,
+  logging-rules source scan. Integration: `parse-event-fk.test.ts` on PGlite proving
+  `on delete set null` survives the `app_user` cascade while the mapping row is
+  removed, plus check/unique constraints and the Drizzle repositories.
+- Dependencies added: `openai` 7.10, `zod` 4.5; dev `@electric-sql/pglite` 0.5.
+  `.dev.vars.example` and `Env` already had `OPENAI_API_KEY` from M1 — unchanged.
+
+### Assumed
+
+- **`LlmParseResult.usage?` added to M1's port** (`model`, `inputTokens`,
+  `outputTokens`, `latencyMs`) so `parse_event` can be costed; and `LlmParseError`
+  (`refusal | incomplete | invalid_output | api_error`) as the port's failure
+  contract. Additive; nothing else changed on the port.
+- **The model is never told today's date.** M9 says the prompt carries text +
+  category names + currency and nothing else, so relative dates (`yesterday`, `last
+  friday`) are resolved mechanically from the injected `Clock` + user timezone, and
+  the model is instructed to return `transaction_date: null` for them. A model date
+  is accepted only when no mechanical date exists; a disagreement clarifies.
+- **`UserParseContext`** (`userId`, `currencyCode`, `timezone`, `categories:
+  {id,name}[]`, optional `accountCreatedOn`) is assembled by the caller (M7) from
+  M2/M3 — M6 reads no other module's table. It has no channel identifier.
+- **M5 trigger = `availableToday(userId, categoryId)`** (the only on-demand
+  compute+persist method on the port); called after a categorised expense/refund,
+  not after income. M3's own `record` step 2e also notifies M5 — if that lands, one
+  of the two calls should go (Open questions 4).
+- **Backdated `occurredAt`** = local noon of `occurredOn` in the user's timezone;
+  same-day = `clock.now()`.
+- **Guard clarifications log `route: 'mechanical'`**, not `'llm'`, so M9's future
+  "% handled without an LLM" metric isn't polluted by messages that never reached the
+  model.
+- **Thresholds 0.85/0.5 are placeholders**, per M6 "decide from eval results" —
+  the deterministic eval can't measure model confidence; run the live eval once a key
+  is available and set them from its percentiles.
+- **Merchant keys are exact** (M6 "conservative in v1"): `woolworths 1234 brisbane`
+  and `woolies` are different keys; proposals are limited to ≤ 3-word keys.
+- **`wrangler deploy --dry-run` still passes but proves nothing about the OpenAI
+  SDK on Workers** — `index.ts` doesn't import `parsing/` until M7 wires it, so the
+  bundle is unchanged at 62.8 KiB. The SDK is fetch-based and Workers-supported per
+  its docs; verify on M7's first dry-run.
+
+### Open questions
+
+1. **Merge order: M2 before this PR.** `observability.ts` and `merchant.ts` import
+   `appUser` from `./identity` as the doc-specified table. Until M2's PR fills that
+   file, `npm run typecheck` reports **exactly two TS2305 errors on those two import
+   lines and nothing else** (no cascade — verified; `npm test` is unaffected because
+   nothing evaluates the FK callback outside `drizzle-kit`). I chose the honest
+   direct import over a cast-based shim so the code is correct the moment M2 lands.
+   **No migration SQL is committed in this PR** for the same reason: it must sort
+   after M2's `app_user` migration. After rebasing on M2, run `npm run db:generate`
+   — the expected output is in the header of `test/integration/parse-event-fk.test.ts`.
+2. **Attributing a correction to its parse event.** `was_corrected` needs M3's
+   `correct(userId, transactionId, …)` to find the `parse_event` row, but M9's schema
+   (built verbatim) has no `transaction_id`, and M3's `transaction` has no
+   `parse_event_id`. Proposal: M3 adds `parse_event_id uuid references
+   parse_event(id) on delete set null` to `transaction` and calls
+   `ParseEventCorrectionHook.onTransactionCorrected(parseEventId)`. Until then the
+   hook exists and is tested but has no caller.
+3. **`merchant_category_mapping.category_id` FK.** Declared as a bare `uuid not null`
+   because M3's `category` table is Phase 2. When M3's schema lands, add
+   `.references(() => category.id, { onDelete: 'cascade' })` (a mapping to a deleted
+   category is meaningless) — one line in `merchant.ts`.
+4. **Double M5 notification.** M3's `record` step 2e says M3 notifies M5; M6's
+   checklist 3 says M6 triggers recalculation. Both are wired at the port level now;
+   keep one when M3 is built.
+5. **The 100% deterministic pass rate is a regression baseline, not an accuracy
+   claim** — the set was labelled by the same author as the parser. The number that
+   matters for confidence thresholds is the live-LLM eval, which is unmeasured
+   (no key in this environment). Please run `OPENAI_API_KEY=… npx vitest run
+   test/eval/live-llm.eval.test.ts` once and paste the printed table here.
+6. **`money.ts` is now implemented by M6** (the M1 comment said "M3/M6 own the real
+   conversion"). The M3 agent should reuse it rather than re-implement; flagging so
+   the Phase 2 pair don't collide with it.
+7. **Command surface for mapping management** (M6 open decision 3) is untouched —
+   `MerchantMappingRepository.remove` exists for M11's future `/categories`-adjacent
+   command, nothing calls it yet.
+
+### CLAUDE.md conventions pass — 2026-09-06 (follow-up commit on the same branch)
+
+`CLAUDE.md` landed on `phase-1` after this PR was opened. It was merged in and its
+conventions applied to M6/M9's own code. **No behaviour changed** — same routing,
+same policy, same privacy rules, same 71 passing tests (1 skipped: the live-LLM eval).
+
+**Moved / renamed**
+
+- **`I`-prefix dropped everywhere** (CLAUDE.md: "Do not prefix interfaces with `I`").
+  Where the interface name collided with the class, the implementation took the
+  `Default` prefix CLAUDE.md prescribes:
+  `IMessageNormalizer`→`MessageNormalizer` / `MessageNormalizer`→`DefaultMessageNormalizer`;
+  `IMechanicalTransactionParser`→`MechanicalTransactionParser` /
+  `MechanicalTransactionParser`→`DefaultMechanicalTransactionParser`;
+  `ITransactionCandidateValidator`→`TransactionCandidateValidator` /
+  `TransactionCandidateValidator`→`DefaultTransactionCandidateValidator`;
+  `IMerchantMappingRepository`→`MerchantMappingRepository`;
+  `IParseEventRepository`→`ParseEventRepository`. The redundant alias
+  `ILlmTransactionParser = LlmParser` is gone — callers use `LlmParser` directly.
+- **Concrete adapters moved to `src/infrastructure/`** (CLAUDE.md target structure):
+  `DrizzleMerchantMappingRepository` →
+  `infrastructure/database/repositories/drizzle-merchant-mapping-repository.ts`;
+  `DrizzleParseEventRepository` →
+  `infrastructure/database/repositories/drizzle-parse-event-repository.ts`;
+  `OpenAiLlmTransactionParser` → `infrastructure/llm/openai-parser.ts`, renamed
+  `OpenAiLlmParser` to match the port it implements. The ports themselves stay in
+  `src/parsing/` next to the pipeline that consumes them, so `src/parsing/**` no
+  longer imports Drizzle or the OpenAI SDK at all.
+- **`LlmParser` port moved out of `core/ports/`** into `src/parsing/llm-parser.ts`
+  (CLAUDE.md: "Do not use a global `core/ports` folder as a dumping ground"); the one
+  `export * from './llm-parser'` line was dropped from `core/ports/index.ts` and
+  nothing else in that barrel was touched.
+- **`core/domain/money.ts` → `core/shared/money.ts`** with a `core/shared/index.ts`
+  barrel — CLAUDE.md names it there explicitly. `core/domain/index.ts` lost only its
+  `money` re-export.
+- **`createParsingPipeline` moved to `infrastructure/create-parsing-pipeline.ts`.**
+  It wires Drizzle + OpenAI into the pipeline, so it cannot live in `src/parsing/`
+  without inverting CLAUDE.md's dependency direction. See conflict 3 below.
+- **Test doubles moved out of `src/`**: `src/parsing/testing/index.ts` →
+  `test/support/{fake-id,in-memory-merchant-mapping-repository,
+  in-memory-parse-event-repository,recording-ledger-service,
+  recording-allowance-service,scripted-llm-parser}.ts` (CLAUDE.md, "Testing":
+  reusable test-only code belongs under `test/support/`, one double per file).
+- **Two method renames** for CLAUDE.md's verb-first / business-terminology rule:
+  `MessageNormalizer.merchantKey` → `deriveMerchantKey`, and
+  `MerchantMappingRepository.touch` → `markUsed` (`touch` is database/unix jargon).
+
+**Architectural conflicts flagged rather than resolved** — each would require editing
+files owned by other, still-unbuilt modules, which CLAUDE.md's change discipline
+("do not combine broad structural refactoring with an unrelated feature change")
+rules out for this PR:
+
+1. **`parsing/` is not a `core/<module>` in CLAUDE.md's target tree** — it and
+   `observability/` are listed as bare top-level folders, while the module-ownership
+   model in "Core modules" would make M6 a business capability like `core/ledger/`.
+   The ports were therefore kept in `src/parsing/`, matching the tree literally. If
+   the intent is that M6 becomes `core/parsing/` with `infrastructure/` adapters, that
+   is a one-time rename worth doing across `parsing/` + `observability/` together,
+   ideally when M7 wires them in.
+2. **`core/ports/common.ts` and `core/ports/clock.ts` are not yet under
+   `core/shared/`**, where CLAUDE.md's tree puts them. Every module — including the
+   untouched Phase 2/3 stubs and the in-flight M8 PR — imports them from
+   `core/ports/`, so moving them is a repo-wide refactor of its own. `core/shared/`
+   currently holds only `money.ts` as a result. Likewise `core/domain/period.ts` and
+   `core/domain/allowance.ts` still sit in the `core/domain` "dumping ground"
+   CLAUDE.md warns against; they belong to M4/M5 and should move to
+   `core/budgets/period.ts` / `core/allowance/daily-target.ts` when those land.
+3. **The composition root should own the wiring.** CLAUDE.md says `src/index.ts`
+   creates the database client, repositories and services. `createParsingPipeline`
+   is that composition expressed as a factory, parked under `infrastructure/` because
+   `src/index.ts` does not import `parsing/` until M7. When M7 wires the webhook, the
+   factory's body should move into `src/index.ts` (or be called from it) and the
+   `db`/`openAiApiKey` arguments should come from the Worker's bindings there.
+4. **`src/db/` is not yet `infrastructure/database/`.** CLAUDE.md puts `client.ts`,
+   `schema/` and `migrations/` under `infrastructure/database/`. `db/schema/` is one
+   barrel shared by all eight modules (most still stubs) and one `drizzle.config.ts`
+   path; moving only `merchant.ts`/`observability.ts` would fragment it, so nothing
+   under `src/db/` was moved. This is the last structural gap and should be done as a
+   single repo-wide move once the Phase 2 schema files are filled in.
+
+**Verification:** `npm run typecheck` reports the same six errors as before this pass
+and no new ones — two are the documented merge-order `TS2305`s on `appUser` (open
+question 1), and four are pre-existing `node:fs`/`__dirname` errors in
+`test/unit/logging-rules.test.ts` because `@types/node` is not a declared
+devDependency (unrelated to M6; adding it is a `package.json` change nobody has
+approved). `npm test` 71 passed / 1 skipped, `npm run test:integration` 4 passed
+(PGlite, no `DATABASE_URL` needed). The live-LLM eval is still unmeasured — no
+`OPENAI_API_KEY` in this environment.
+
+## M6 ← phase-1 merge — 2026-09-08
+
+**Branch:** `merge-m6-into-phase-1` (off `origin/worktree-agent-acb0c43fa675c8134`)
+
+Both sides performed the CLAUDE.md structural refactor independently off `3584b3a`,
+so git saw the same directories moved two different ways. Eight conflicts. Resolution
+rule throughout: **phase-1 wins on file location, M6 wins on file content.**
+
+### Conflicts and how each was resolved
+
+1. `src/core/domain/index.ts` (modify/delete) — deleted. phase-1 dissolved
+   `core/domain`; `period.ts` → `core/budgets/period.ts` and `allowance.ts` →
+   `core/allowance/daily-target.ts`. The barrel was the last file left and its two
+   `export *` targets no longer existed.
+2. `src/core/shared/money.ts` (rename/delete) — M6's real implementation, at phase-1's
+   path. phase-1 carried the M1 `not implemented` stubs; M6 filled them in and added
+   `MoneyError`. Import repointed `../ports/common` → `./common`.
+3. `src/parsing/llm-parser.ts` (rename/delete) — M6's version. phase-1 held M1's
+   narrower port; M6's adds `LlmUsage`, which `parse_event` needs.
+4. `src/parsing/index.ts` (content) — M6's full barrel over phase-1's placeholder.
+5. `src/core/ports/index.ts` (content) — phase-1's version verbatim. What remains is
+   `CategoryService` + `ReminderSelectionService`, the two contracts M2 proposed but
+   does not own; M6's header described a `core/ports` that no longer exists.
+6. `src/infrastructure/database/schema/merchant.ts` (file location) — M6 added
+   `merchant.ts` into `src/db/schema/`, which phase-1 had renamed. Taken at the new
+   path. This closes M6 open question 4: `src/db/` is now fully
+   `infrastructure/database/`.
+7. `test/unit/scaffold.test.ts` (content) — phase-1's import paths, minus the
+   `toMinorUnits` guardrail. That test asserted `money.ts` throws `not implemented`;
+   M6 implemented it, so the assertion is obsolete — coverage moved to
+   `test/unit/money.test.ts`.
+8. `docs/build-log.md` (content) — both sides kept, phase-1's sections first.
+
+### Beyond the conflicts
+
+- **Import repointing, 20 files.** M6 files that auto-merged cleanly still referenced
+  directories phase-1 moved underneath them: `core/ports/{common,clock}` →
+  `core/shared/`, `core/ports/ledger-service` → `core/ledger/`,
+  `core/ports/daily-allowance-service` → `core/allowance/allowance-service`,
+  `src/db/schema/` → `infrastructure/database/schema/`, and
+  `src/core/testing/test-clock` → `test/support/test-clock`.
+- **`test/unit/logging-rules.test.ts`.** M9's source scan looks up the schema file by
+  literal relative path; repointed to
+  `infrastructure/database/schema/observability.ts`. This was the one test the merge
+  actually broke.
+- **Migration `0002_dashing_tempest.sql` generated.** Purely additive: creates
+  `parse_event` and `merchant_category_mapping` with their FKs to `app_user`. This
+  closes M6 open question 1 — the `appUser` import in `observability.ts` was waiting
+  on M2, which is now present, and the two documented `TS2305`s are gone.
+
+**Verification:** `npm run typecheck` — 4 errors, all pre-existing `node:fs` /
+`__dirname` / implicit-any in `test/unit/logging-rules.test.ts` because `@types/node`
+is not a declared devDependency; no new errors and the two merge-order `TS2305`s
+resolved. `npm test` 174 passed / 9 skipped. `npm run test:integration` 4 passed /
+9 skipped — the 9 are M2's and M8's identity/entitlements suites, which need
+`DATABASE_URL`; **they were not executed.** The live-LLM eval is still unmeasured (no
+`OPENAI_API_KEY`).

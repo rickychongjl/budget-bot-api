@@ -13,9 +13,8 @@
  *   entitlement.ts    M8  entitlement, usage_counter
  *   observability.ts  M9  parse_event               (built in M6's PR)
  *   platform.ts       M7  inbound_update
- *
- * M6 additionally needs `merchant_category_mapping`; it is not in M1's file list, so
- * the M6 agent adds `./merchant` here alongside its `parsing/` work. See build-log.
+ *   merchant.ts       M6  merchant_category_mapping (added by M6 — not in M1's list,
+ *                         see M1 build-log open question 1)
  */
 export * from './identity';
 export * from './category';
@@ -25,3 +24,4 @@ export * from './allowance';
 export * from './entitlement';
 export * from './observability';
 export * from './platform';
+export * from './merchant';

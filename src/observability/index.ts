@@ -9,6 +9,9 @@
  *     or raw message content. A stack trace with a request body is a defect.
  *   - Data stays in Australia (Neon Sydney).
  *
+ * `log.ts` is the minimal structured-logging helper that makes those rules the path
+ * of least resistance (flat primitive fields only, truncated, token-redacted).
+ *
  * Metrics, dashboards, retention/cleanup jobs: deferred to before public beta.
  */
-export {};
+export * from './log';
