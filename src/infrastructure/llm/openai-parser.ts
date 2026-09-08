@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { zodTextFormat } from 'openai/helpers/zod';
 import { z } from 'zod';
-import type { Clock } from '../../core/ports/clock';
+import type { Clock } from '../../core/shared/clock';
 import type { Logger } from '../../observability/log';
 import { NoopLogger } from '../../observability/log';
 import { LlmParseError, type LlmParseResult, type LlmParser, type LlmParserContext, type LlmUsage } from '../../parsing/llm-parser';

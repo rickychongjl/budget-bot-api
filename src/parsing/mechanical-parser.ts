@@ -1,4 +1,4 @@
-import type { CurrencyCode, LocalDate } from '../core/ports/common';
+import type { CurrencyCode, LocalDate } from '../core/shared/common';
 import { addDays, daysInMonth, isValidLocalDate, splitLocalDate, toLocalDate, weekday } from './dates';
 import type { MessageNormalizer } from './normalizer';
 import type {

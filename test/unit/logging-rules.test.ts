@@ -41,7 +41,7 @@ describe('M9 logging rules — source scan', () => {
   });
 
   it('the parse_event schema has no text-bearing column', () => {
-    const schema = files.find((f) => f.rel === 'db/schema/observability.ts')!.text;
+    const schema = files.find((f) => f.rel === 'infrastructure/database/schema/observability.ts')!.text;
     const columns = [...schema.matchAll(/^\s+(\w+):\s+(\w+)\(/gm)].map((m) => ({ name: m[1]!, type: m[2]! }));
     expect(columns.map((c) => c.name).sort()).toEqual(
       ['createdAt', 'id', 'inputTokens', 'latencyMs', 'model', 'neededClarification', 'outputTokens', 'route', 'userId', 'wasCorrected'],

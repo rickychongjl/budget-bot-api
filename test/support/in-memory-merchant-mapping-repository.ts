@@ -1,4 +1,4 @@
-import type { Id, UserId } from '../../src/core/ports/common';
+import type { Id, UserId } from '../../src/core/shared/common';
 import type { ConfirmedMapping, MerchantMappingRepository } from '../../src/parsing/merchant-mapping-repository';
 import type { MerchantMapping } from '../../src/parsing/types';
 import { fakeId } from './fake-id';

@@ -1,4 +1,4 @@
-import type { Id } from '../../src/core/ports/common';
+import type { Id } from '../../src/core/shared/common';
 
 /** Monotonic, readable ids for test doubles — never used in production code. */
 let nextId = 1;

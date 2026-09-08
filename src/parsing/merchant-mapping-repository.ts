@@ -1,4 +1,4 @@
-import type { Id, Instant, UserId } from '../core/ports/common';
+import type { Id, Instant, UserId } from '../core/shared/common';
 import type { MerchantMapping, MerchantMappingSource } from './types';
 
 /**

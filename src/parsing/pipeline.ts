@@ -1,7 +1,7 @@
-import type { Clock } from '../core/ports/clock';
-import type { Id, Instant, LocalDate, UserId } from '../core/ports/common';
-import type { DailyAllowanceService } from '../core/ports/daily-allowance-service';
-import type { LedgerService, ParseRoute, Transaction, ValidatedCandidate } from '../core/ports/ledger-service';
+import type { Clock } from '../core/shared/clock';
+import type { Id, Instant, LocalDate, UserId } from '../core/shared/common';
+import type { DailyAllowanceService } from '../core/allowance/allowance-service';
+import type { LedgerService, ParseRoute, Transaction, ValidatedCandidate } from '../core/ledger/ledger-service';
 import { NoopLogger, type Logger } from '../observability/log';
 import { localDateAt } from './dates';
 import { LlmParseError, type LlmParseResult, type LlmParser, type LlmUsage } from './llm-parser';

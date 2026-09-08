@@ -1,5 +1,5 @@
-import type { Id, Instant, UserId } from '../core/ports/common';
-import type { ParseRoute } from '../core/ports/ledger-service';
+import type { Id, Instant, UserId } from '../core/shared/common';
+import type { ParseRoute } from '../core/ledger/ledger-service';
 
 /**
  * M9's `parse_event`, written by M6 on every parse (M6 checklist step 5) — the

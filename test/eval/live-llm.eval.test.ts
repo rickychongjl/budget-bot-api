@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LlmParseError } from '../../src/parsing/llm-parser';
-import { SystemClock } from '../../src/core/ports/clock';
+import { SystemClock } from '../../src/core/shared/clock';
 import { OpenAiLlmParser } from '../../src/infrastructure/llm/openai-parser';
 import { EVAL_CASES, EVAL_SET_VERSION } from './cases.v1';
 import { CATEGORIES } from './fixture';

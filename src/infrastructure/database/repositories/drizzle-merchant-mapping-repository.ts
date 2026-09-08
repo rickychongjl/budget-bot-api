@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
-import type { Id, Instant, UserId } from '../../../core/ports/common';
-import { merchantCategoryMapping } from '../../../db/schema/merchant';
+import type { Id, Instant, UserId } from '../../../core/shared/common';
+import { merchantCategoryMapping } from '../schema/merchant';
 import type { ConfirmedMapping, MerchantMappingRepository } from '../../../parsing/merchant-mapping-repository';
 import type { MerchantMapping, MerchantMappingSource } from '../../../parsing/types';
 

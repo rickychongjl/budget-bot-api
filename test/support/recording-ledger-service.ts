@@ -1,4 +1,4 @@
-import type { Id, Instant, LocalDate, MinorUnits, UserId } from '../../src/core/ports/common';
+import type { Id, Instant, LocalDate, MinorUnits, UserId } from '../../src/core/shared/common';
 import type {
   LedgerService,
   Page,
@@ -6,7 +6,7 @@ import type {
   Transaction,
   TransactionPatch,
   ValidatedCandidate,
-} from '../../src/core/ports/ledger-service';
+} from '../../src/core/ledger/ledger-service';
 import { fakeId } from './fake-id';
 
 /** Records what M6 hands M3; `record` returns a plausible `Transaction`. */

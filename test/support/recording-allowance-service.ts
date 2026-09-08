@@ -1,10 +1,10 @@
-import type { Id, Instant, UserId } from '../../src/core/ports/common';
+import type { Id, Instant, UserId } from '../../src/core/shared/common';
 import type {
   AllowanceView,
   DailyAllowanceService,
   DueSend,
   SendOutcome,
-} from '../../src/core/ports/daily-allowance-service';
+} from '../../src/core/allowance/allowance-service';
 
 /** Records the recalculation triggers M6 sends M5. */
 export class RecordingAllowanceService implements DailyAllowanceService {

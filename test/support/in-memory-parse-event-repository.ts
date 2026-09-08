@@ -1,4 +1,4 @@
-import type { Id, Instant } from '../../src/core/ports/common';
+import type { Id, Instant } from '../../src/core/shared/common';
 import type { ParseEventInput, ParseEventRepository } from '../../src/parsing/parse-event-repository';
 import { fakeId } from './fake-id';
 

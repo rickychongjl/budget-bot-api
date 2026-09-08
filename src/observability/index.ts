@@ -1,7 +1,7 @@
 /**
  * M9 — Observability, Privacy & Retention (stub by design this pass).
  *
- * The fixed pieces — `db/schema/observability.ts` (`parse_event`) and the logging
+ * The fixed pieces — `infrastructure/database/schema/observability.ts` (`parse_event`) and the logging
  * rules — are built inside M6's PR. Binding now, expensive to retrofit:
  *   - The LLM prompt carries only message text + category names + currency.
  *   - `parse_event` holds NO message text — routes/tokens/latencies/booleans only.

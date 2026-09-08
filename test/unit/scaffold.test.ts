@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import * as ports from '../../src/core/ports';
-import { computeDailyTarget } from '../../src/core/domain/allowance';
-import { periodFor } from '../../src/core/domain/period';
+import { SystemClock } from '../../src/core/shared/clock';
+import { computeDailyTarget } from '../../src/core/allowance/daily-target';
+import { periodFor } from '../../src/core/budgets/period';
 
 /**
  * Phase 0 guardrails. Not domain coverage — that lands with M3/M4/M5. These assert
@@ -13,8 +13,8 @@ import { periodFor } from '../../src/core/domain/period';
 
 describe('port surface', () => {
   it('re-exports the shared time source', () => {
-    expect(typeof ports.SystemClock).toBe('function');
-    expect(new ports.SystemClock().now()).toBeTypeOf('number');
+    expect(typeof SystemClock).toBe('function');
+    expect(new SystemClock().now()).toBeTypeOf('number');
   });
 });
 

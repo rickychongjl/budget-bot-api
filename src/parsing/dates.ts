@@ -1,4 +1,4 @@
-import type { Instant, LocalDate } from '../core/ports/common';
+import type { Instant, LocalDate } from '../core/shared/common';
 
 /**
  * Small, pure calendar helpers for the parser. No `Date.now()` anywhere — every

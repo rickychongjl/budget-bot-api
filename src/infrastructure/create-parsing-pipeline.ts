@@ -1,7 +1,7 @@
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
-import type { Clock } from '../core/ports/clock';
-import type { DailyAllowanceService } from '../core/ports/daily-allowance-service';
-import type { LedgerService } from '../core/ports/ledger-service';
+import type { Clock } from '../core/shared/clock';
+import type { DailyAllowanceService } from '../core/allowance/allowance-service';
+import type { LedgerService } from '../core/ledger/ledger-service';
 import type { Logger } from '../observability/log';
 import { DefaultMechanicalTransactionParser } from '../parsing/mechanical-parser';
 import { DefaultMessageNormalizer } from '../parsing/normalizer';

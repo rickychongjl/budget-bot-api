@@ -1,4 +1,4 @@
-import { TestClock } from '../../src/core/testing/test-clock';
+import { TestClock } from '../support/test-clock';
 import { DefaultMechanicalTransactionParser } from '../../src/parsing/mechanical-parser';
 import { DefaultMessageNormalizer } from '../../src/parsing/normalizer';
 import { TransactionParsingPipeline, type ParsingPolicy } from '../../src/parsing/pipeline';

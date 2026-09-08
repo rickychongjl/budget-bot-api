@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
-import type { Id, Instant } from '../../../core/ports/common';
-import { parseEvent } from '../../../db/schema/observability';
+import type { Id, Instant } from '../../../core/shared/common';
+import { parseEvent } from '../schema/observability';
 import type {
   ParseEventCorrectionHook,
   ParseEventInput,

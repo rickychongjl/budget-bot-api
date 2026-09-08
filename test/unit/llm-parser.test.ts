@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LlmParseError } from '../../src/parsing/llm-parser';
-import { TestClock } from '../../src/core/testing/test-clock';
+import { TestClock } from '../support/test-clock';
 import type { LogFields, LogLevel, Logger } from '../../src/observability/log';
 import { INSTRUCTIONS, LLM_MODEL, OpenAiLlmParser, buildPrompt } from '../../src/infrastructure/llm/openai-parser';
 

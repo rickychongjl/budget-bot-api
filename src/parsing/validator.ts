@@ -1,5 +1,5 @@
-import type { CurrencyCode, Instant, LocalDate } from '../core/ports/common';
-import type { ParseRoute, TransactionDirection, ValidatedCandidate } from '../core/ports/ledger-service';
+import type { CurrencyCode, Instant, LocalDate } from '../core/shared/common';
+import type { ParseRoute, TransactionDirection, ValidatedCandidate } from '../core/ledger/ledger-service';
 import { MoneyError, toMinorUnits } from '../core/shared/money';
 import { compareLocalDates, instantAtLocalNoon, isValidLocalDate } from './dates';
 import type { MessageNormalizer } from './normalizer';

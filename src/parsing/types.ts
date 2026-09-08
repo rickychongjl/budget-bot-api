@@ -1,5 +1,5 @@
-import type { CurrencyCode, Id, LocalDate, UserId } from '../core/ports/common';
-import type { ParseRoute, Transaction, ValidatedCandidate } from '../core/ports/ledger-service';
+import type { CurrencyCode, Id, LocalDate, UserId } from '../core/shared/common';
+import type { ParseRoute, Transaction, ValidatedCandidate } from '../core/ledger/ledger-service';
 
 /**
  * Shared shapes for the M6 pipeline. Each stage is its own focused component

@@ -1,4 +1,4 @@
-import type { CurrencyCode } from '../core/ports/common';
+import type { CurrencyCode } from '../core/shared/common';
 
 /**
  * M6 — the provider-neutral LLM port, owned by the module that consumes it
