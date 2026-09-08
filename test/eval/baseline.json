@@ -1,0 +1,6 @@
+{
+  "evalSetVersion": 1,
+  "measuredAt": "2026-09-06",
+  "deterministicPassRate": 1,
+  "note": "Ratchet for test/eval/deterministic.eval.test.ts — the measured pass rate of the last committed run (158/158 on 2026-09-06), not a target. Raise it when the number goes up; a drop fails CI. This measures routing/extraction/validation/policy with a scripted model; the model's own accuracy comes from live-llm.eval.test.ts and is not yet measured."
+}

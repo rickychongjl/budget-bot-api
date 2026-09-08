@@ -59,8 +59,9 @@ Metrics matter once there's traffic to measure — building dashboards before th
 ---
 
 ## Task checklist (this pass)
-1. Migration for `parse_event` (`db/schema/observability.ts`) — done as part of M6's PR, not a separate one.
+1. Migration for `parse_event` (`infrastructure/database/schema/observability.ts`) — done as part of M6's PR, not a separate one.
 2. Add a lightweight logging lint/review step (even a code-review checklist item is enough for this pass) confirming no PR introduces a log line with message text, bot tokens, webhook secrets, or Telegram identifiers.
+   - **Status: review-time discipline, not an automated check.** M6's pass shipped an automated version — `test/unit/logging-rules.test.ts`, a source scan that failed when anything outside `observability/log.ts` and `index.ts` called `console.*`, when a secret binding was interpolated into a string or passed to the logger, or when `parse_event` grew a column. It was removed on 2026-09-08 (`8b07fb1`): it needed `node:fs`/`__dirname` without `@types/node` declared, which cost four standing `typecheck` errors, and its schema assertion duplicated the committed migration and `test/integration/parse-event-fk.test.ts`. The checklist item itself is unchanged — the rules below are still binding, they are now upheld at review time. If it is automated again, it belongs in an ESLint rule (`no-console` with an allowlist), not a Vitest suite.
 3. Confirm `parse_event.user_id`'s `on delete set null` actually fires correctly against M2's cascade delete (test this specifically — it's the one row that's supposed to survive account deletion).
 
 ## Task checklist (explicitly deferred — do not build this pass)
