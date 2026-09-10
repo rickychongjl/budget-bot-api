@@ -1159,10 +1159,10 @@ and the master plan §4 says to treat them as one workstream. One migration,
 category-service,default-ledger-service}.test.ts`) plus
 `test/integration/ledger-budgets.test.ts`.
 
-`npm run test:integration` — 20 passed / 9 skipped. The 20 are the PGlite suites
-(`parse-event-fk`, `ledger-budgets`), which need no database. **The 9 skipped are M2's
-and M8's identity/entitlements suites, which need `DATABASE_URL` and were not
-executed.**
+`npm run test:integration` — 20 passed / 9 skipped at the time of the commit. The 20
+are the PGlite suites (`parse-event-fk`, `ledger-budgets`), which need no database;
+the 9 skipped were M2's and M8's suites, which need `DATABASE_URL` and were not
+executed. **Superseded — see "first real-database run" below.**
 
 `npm run db:generate` — `0003_flashy_true_believers.sql` generated, inspected and
 committed with its snapshot.
@@ -1176,3 +1176,33 @@ One production behaviour changed while making the integration suite run on PGlit
 (PGlite). Reading only one meant a duplicate category name surfaced as a raw Postgres
 error rather than the typed `DuplicateCategoryNameError` under whichever driver was
 not covered.
+
+### First real-database run — 2026-09-11
+
+Ricky supplied `DATABASE_URL`, so M2's and M8's suites executed for the first time in
+this repo's history (M8's own header had said it was waiting on CI). **29 integration
+tests passed, 0 skipped; 302 in the full suite, 0 skipped.** Two things came out of it.
+
+1. **`test/integration/identity.test.ts` was asserting the old `UserSettings` shape.**
+   Adding `accountCreatedOn` meant its two `toEqual` round-trip assertions failed. The
+   two *unit* tests with the same assertion were updated in the original commit; this
+   one was invisible because it skips without `DATABASE_URL`. Now updated, with the
+   derivation spelled out — the clock is fixed at `2026-09-06T00:00:00Z`, which is
+   09:30 in Adelaide, so `accountCreatedOn` is `2026-09-06`.
+
+   The general lesson for anyone widening a shared contract: a `DATABASE_URL`-gated
+   suite asserting on a full object with `toEqual` will not tell you it is stale.
+
+2. **M8's concurrency test timed out at the 5s default — not a defect, and not caused
+   by M3/M4.** `admits once per message_id under concurrent redelivery` issues 14
+   `admitMessage` calls that all contend on the same per-user advisory lock, so they
+   serialise by design, each holding the lock for a transaction's worth of round trips
+   to Neon in Sydney. Warm, it lands at ~3.5s; the failing run also paid Neon's compute
+   wake-up on the session's first query. Every other integration test is under 1.4s.
+   Fixed with a 30s **per-test** timeout and a comment explaining why — raising the
+   global timeout would hide a genuine hang in the sub-second tests around it.
+
+   Ruled out as an M3/M4 regression: the only M3/M4 change under that test is
+   `core/entitlements/local-time.ts` delegating to `core/shared/local-date.ts`, which is
+   pure in-process `Intl` work, and the same test passed at the default 5s timeout on
+   the very next run with that code in place.

@@ -98,7 +98,17 @@ describe.skipIf(!url)('EntitlementService over Drizzle', () => {
       sql`select count(*)::int as count from usage_counter where user_id = ${userId}`,
     )) as unknown as [{ count: number }];
     expect(count).toBe(5);
-  });
+  },
+  /**
+   * Deliberately serialised, so it is network-bound rather than slow: all 14
+   * `admitMessage` calls contend on the same per-user advisory lock, and each holds it
+   * for a transaction's worth of round trips to Neon in Sydney. It settles around 3.5s
+   * warm, but the very first query of a run also pays Neon's compute wake-up, which
+   * pushed it past the 5s default the first time this suite was ever executed against
+   * a real database. The timeout is per-test on purpose — raising it globally would
+   * hide a genuine hang in the sub-second tests around it.
+   */
+  30_000);
 
   it('enforces one active entitlement per user at the database', async () => {
     await db.execute(
