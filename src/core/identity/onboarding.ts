@@ -1,6 +1,7 @@
+import { normalizeCategoryName } from '../ledger';
 import { formatMinorUnits, toMinorUnits } from '../shared/money';
 import type { BudgetService } from '../budgets/budget-service';
-import type { Category, CategoryService } from '../ports/category-service';
+import type { Category, CategoryService } from '../ledger';
 import type { Clock } from '../shared/clock';
 import type { CurrencyCode, Id, MinorUnits, RefusalCode, Tier, UserId } from '../shared/common';
 import type { EntitlementService } from '../entitlements/entitlement-service';
@@ -542,9 +543,14 @@ function parseRename(value: string): { currentName: string; newName: string } | 
   return currentName === '' || newName === '' ? null : { currentName, newName };
 }
 
-/** Mirrors the intent of M3's `normalized_name`: case- and whitespace-insensitive. */
+/**
+ * M3's `normalized_name` rule — case- and whitespace-insensitive. M2 kept its own copy
+ * while M3 was a stub; now that M3 owns the rule this delegates, so there is exactly
+ * one definition of what makes two category names the same name. Re-exported under
+ * M2's original name because `core/identity` already exports it.
+ */
 export function normaliseName(name: string): string {
-  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+  return normalizeCategoryName(name);
 }
 
 /** Strip anything that could read as markup or control characters when M7 echoes it. */

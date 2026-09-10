@@ -5,6 +5,19 @@
 **One-line scope:** Owns what "this budgeting cycle" means and how much the user has agreed to spend in it. Every other module that needs a period boundary asks this one; nobody does date maths independently.
 **Reconciled 5 Sep (round 3):** the round-2 expansion to three period types (monthly/fortnightly/weekly) is **reverted**. Ricky: *"actually lets skip the complexity and only say that we can have a monthly budget."* Monthly-only, as originally scoped. The one lasting change from round 2 is cosmetic: the anchor is stored as a full `period_anchor_date` (the "budget start date" M2's onboarding collects) rather than a bare `period_start_day` smallint — see "Period derivation" below for why that's still worth keeping even monthly-only.
 
+**Build status (8 Sep 2026, `phase-2` branch):** built, together with M3 in one PR.
+Every checklist item below is done. Decisions taken while building, recorded in
+`docs/build-log.md`:
+- **`period_anchor_date` kept, `period_type` dropped** — the plan's open call, taken
+  as written. M2's shipped `app_user` schema already had the column.
+- `BudgetService` gained `currentBudgets(userId, localDate)` — the read `/budget` with
+  no arguments needs (checklist step 7). It returns the standing rule, the derived
+  period, and the snapshot cap (null when nothing has been materialised), so M7 can
+  show both figures after a mid-period change without a second call.
+- `PeriodMaterialiser<X>` is a separate M4-owned contract that lets M3 materialise a
+  period inside its own write transaction without either module depending on Drizzle
+  (CLAUDE.md, "Transactions"). It reuses M8's `CapacityReader<X>` / `gate` pattern.
+
 ---
 
 ## Depends on

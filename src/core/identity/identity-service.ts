@@ -33,6 +33,14 @@ export interface UserSettings {
   periodAnchorDate: LocalDate | null;
   /** Fixed 07:00 for every user this pass (5 Sep decision); still stored per-user. */
   reminderLocalTime: LocalTime;
+  /**
+   * The local date `app_user.created_at` falls on — M3's backdating floor (confirmed
+   * round 3: "account creation date"). Added when M3 landed: M6's `UserParseContext`
+   * already expected M7 to source `accountCreatedOn` from `getSettings`, and M3
+   * re-checks the floor itself rather than trusting its caller. Derived, never
+   * patchable — hence its absence from `UserSettingsPatch` below.
+   */
+  accountCreatedOn: LocalDate;
 }
 
 /**
@@ -40,7 +48,7 @@ export interface UserSettings {
  * set-once path (`setInitialTimezone`), so a change can't even be expressed here.
  * Same shape M2's plan writes as `Partial<Omit<UserSettings, 'timezone'>>`.
  */
-export type UserSettingsPatch = Partial<Omit<UserSettings, 'timezone'>>;
+export type UserSettingsPatch = Partial<Omit<UserSettings, 'timezone' | 'accountCreatedOn'>>;
 
 /**
  * Full account export. `/export` is deferred (round 5, Story 7) — the method stays on

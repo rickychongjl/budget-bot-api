@@ -13,7 +13,7 @@ import type {
   UserSettingsPatch,
 } from './identity-service';
 import type { OnboardingStep } from './onboarding-step';
-import { canonicalTimezone, isLocalDate, isLocalTime } from './timezones';
+import { canonicalTimezone, isLocalDate, isLocalTime, localDateAt } from './timezones';
 
 /** The only keys accepted by `updateSettings`; timezone has its own set-once path. */
 const MUTABLE_SETTING_KEYS = new Set(['currencyCode', 'periodAnchorDate', 'reminderLocalTime']);
@@ -229,6 +229,9 @@ function toSettings(user: UserRecord, timezone: string): UserSettings {
     currencyCode: user.currencyCode,
     periodAnchorDate: user.periodAnchorDate,
     reminderLocalTime: user.reminderLocalTime,
+    // Derived here rather than stored: the same instant read through the user's own
+    // immutable timezone, which is exactly what M3 compares a backdated date against.
+    accountCreatedOn: localDateAt(user.createdAt, timezone),
   };
 }
 

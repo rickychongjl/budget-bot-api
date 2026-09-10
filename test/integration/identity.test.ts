@@ -96,6 +96,9 @@ run('M2 identity (real Postgres)', () => {
       currencyCode: 'AUD',
       periodAnchorDate: null,
       reminderLocalTime: '07:00',
+      // Derived from `created_at` in the user's own timezone — M3's backdating floor.
+      // The clock is fixed at 2026-09-06T00:00:00Z, which is 09:30 in Adelaide.
+      accountCreatedOn: '2026-09-06',
     });
     const updated = await identity.updateSettings(userId, { periodAnchorDate: '2026-09-15', reminderLocalTime: '08:30', currencyCode: 'NZD' });
     expect(updated).toEqual({
@@ -103,6 +106,8 @@ run('M2 identity (real Postgres)', () => {
       currencyCode: 'NZD',
       periodAnchorDate: '2026-09-15',
       reminderLocalTime: '08:30',
+      // Derived, not patchable — an update never moves it.
+      accountCreatedOn: '2026-09-06',
     });
   });
 

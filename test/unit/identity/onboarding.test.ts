@@ -129,6 +129,7 @@ describe('happy path — 5 steps', () => {
       currencyCode: 'AUD',
       periodAnchorDate: '2026-09-01',
       reminderLocalTime: '07:00',
+      accountCreatedOn: '2026-09-06',
     });
     expect(done.summary.categories).toEqual([
       { id: foodId, name: 'Food', capMinorUnits: 60000n, reminder: true },

@@ -1,10 +1,19 @@
 import type { Instant, LocalDate } from '../shared/common';
+import {
+  addLocalDays as sharedAddLocalDays,
+  localDateAt,
+  parseLocalDate,
+} from '../shared/local-date';
 
 /**
  * IANA-timezone helpers for the daily-quota boundary (M8: "midnight in the user's
  * immutable IANA timezone"). Pure functions over an `Instant` — no `Date.now()` —
  * built on `Intl.DateTimeFormat`, which both Node 20+ (full ICU) and the Workers
  * runtime ship. No timezone library dependency.
+ *
+ * The plain calendar helpers this used to keep privately (`parseLocalDate`,
+ * date formatting, `addLocalDays`) moved to `core/shared/local-date.ts` when M3/M4
+ * needed the same arithmetic; what stays here is the genuinely DST-aware part.
  *
  * DST is handled honestly: "next local midnight" is the first instant of the next
  * local calendar date, which is 23 or 25 hours away on a transition day, and — for
@@ -63,20 +72,6 @@ function wallClockAt(instant: Instant, timeZone: string): WallClock {
   };
 }
 
-function pad2(n: number): string {
-  return n < 10 ? `0${n}` : String(n);
-}
-
-function toLocalDate(w: { year: number; month: number; day: number }): LocalDate {
-  return `${w.year}-${pad2(w.month)}-${pad2(w.day)}`;
-}
-
-function parseLocalDate(localDate: LocalDate): { year: number; month: number; day: number } {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(localDate);
-  if (!m) throw new Error(`local-time: not a YYYY-MM-DD date: ${localDate}`);
-  return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
-}
-
 /** Throws for an unknown IANA name — M2 validates on write, but fail loudly here too. */
 export function assertValidTimeZone(timeZone: string): void {
   try {
@@ -86,9 +81,9 @@ export function assertValidTimeZone(timeZone: string): void {
   }
 }
 
-/** The user-local calendar date at `instant`. */
+/** The user-local calendar date at `instant`. Now `core/shared/local-date.ts`. */
 export function localDateOf(instant: Instant, timeZone: string): LocalDate {
-  return toLocalDate(wallClockAt(instant, timeZone));
+  return localDateAt(instant, timeZone);
 }
 
 /** UTC offset in milliseconds in force at `instant` (positive east of Greenwich). */
@@ -99,11 +94,9 @@ export function offsetMsAt(instant: Instant, timeZone: string): number {
   return asIfUtc - wholeSecond;
 }
 
-/** `localDate` + `days` as a calendar date (no timezone involved). */
+/** `localDate` + `days` as a calendar date (no timezone involved). Now shared. */
 export function addLocalDays(localDate: LocalDate, days: number): LocalDate {
-  const { year, month, day } = parseLocalDate(localDate);
-  const d = new Date(Date.UTC(year, month - 1, day + days));
-  return toLocalDate({ year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() });
+  return sharedAddLocalDays(localDate, days);
 }
 
 /**

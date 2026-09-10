@@ -1,26 +1,9 @@
-import type { RefusalCode } from '../shared/common';
-
 /**
- * A typed refusal (M11's refusal-code table, `RefusalCode` in `ports/common.ts`).
+ * `RefusalError` now lives in `core/shared/errors.ts`.
  *
- * Thrown by domain/service code; M7 catches it and renders `code` through the shared
- * copy table — the user never sees a raw error. `message` is a plain-language
- * explanation that M7 may show verbatim (it contains no user-supplied text unless the
- * thrower escaped it). Added by M2; M3/M8 are welcome to throw the same class so M7 has
- * exactly one thing to catch — at which point it belongs in `core/shared`, not here.
- * See the M2 refactor note in `docs/build-log.md`.
+ * M2 introduced it here and noted that once M3/M8 threw the same class it belonged in
+ * `core/shared` rather than inside one feature module. M3 and M4 throw it, so it
+ * moved. This re-export keeps every existing M2 import — and `core/identity`'s public
+ * surface — exactly as it was.
  */
-export class RefusalError extends Error {
-  override readonly name = 'RefusalError';
-
-  constructor(
-    readonly code: RefusalCode,
-    message?: string,
-  ) {
-    super(message ?? code);
-  }
-
-  static is(value: unknown, code?: RefusalCode): value is RefusalError {
-    return value instanceof RefusalError && (code === undefined || value.code === code);
-  }
-}
+export { RefusalError } from '../shared/errors';

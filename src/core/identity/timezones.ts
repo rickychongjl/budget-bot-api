@@ -1,13 +1,16 @@
 import type { Instant, LocalDate, LocalTime } from '../shared/common';
+import { isLocalDate as isSharedLocalDate, localDateAt as sharedLocalDateAt } from '../shared/local-date';
 
 /**
  * Pure timezone helpers owned by M2 (onboarding step 1, and the "local date derived at
  * write time" rule every module follows — master plan §6). No `Date.now()`, no DB;
  * callers pass an `Instant` from an injected `Clock`.
  *
- * Other modules should import these through the `core/identity` barrel. If M3/M4/M5
- * end up needing `localDateAt` more than M2 does, it is a candidate for
- * `core/shared` — see the M2 refactor note in `docs/build-log.md`.
+ * Other modules should import these through the `core/identity` barrel. `localDateAt`
+ * and `isLocalDate` were the candidates this file flagged for `core/shared` — M3 and
+ * M4 are the modules that needed them, so they now live in
+ * `core/shared/local-date.ts` and are re-exported here under their original names so
+ * M2's public surface is unchanged.
  *
  * Backed by the runtime's IANA database via `Intl` — available in both Workers (V8)
  * and Node ≥ 18 without a dependency.
@@ -90,10 +93,10 @@ function normalise(value: string): string {
 /**
  * The user-local calendar date (`YYYY-MM-DD`) at `instant` in `timeZone`. This is the
  * one derivation every module uses to fill a `date` column at write time (M1 §4).
+ * Now `core/shared/local-date.ts`; kept here so M2's callers are unaffected.
  */
 export function localDateAt(instant: Instant, timeZone: string): LocalDate {
-  const parts = partsAt(instant, timeZone);
-  return `${parts.year}-${parts.month}-${parts.day}`;
+  return sharedLocalDateAt(instant, timeZone);
 }
 
 /** The user-local wall-clock time (`HH:MM`, 24h) at `instant` in `timeZone`. */
@@ -126,21 +129,12 @@ function partsAt(instant: Instant, timeZone: string) {
   };
 }
 
-const LOCAL_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-
 /**
  * True when `value` is a real calendar date in `YYYY-MM-DD` form (so `2026-02-30` is
- * rejected, not silently rolled into March).
+ * rejected, not silently rolled into March). Now `core/shared/local-date.ts`.
  */
 export function isLocalDate(value: string): value is LocalDate {
-  const m = LOCAL_DATE_RE.exec(value);
-  if (!m) return false;
-  const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  if (month < 1 || month > 12 || day < 1) return false;
-  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  return day <= daysInMonth;
+  return isSharedLocalDate(value);
 }
 
 const LOCAL_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
