@@ -1,5 +1,6 @@
 import { normalizeCategoryName } from '../ledger';
 import { formatMinorUnits, toMinorUnits } from '../shared/money';
+import { sanitiseDisplayText } from '../shared/text';
 import type { BudgetService } from '../budgets/budget-service';
 import type { Category, CategoryService } from '../ledger';
 import type { Clock } from '../shared/clock';
@@ -553,9 +554,13 @@ export function normaliseName(name: string): string {
   return normalizeCategoryName(name);
 }
 
-/** Strip anything that could read as markup or control characters when M7 echoes it. */
+/**
+ * Strip anything that could read as markup or control characters when M7 echoes it.
+ * Delegates to `core/shared/text.ts` — one definition for the whole codebase as of
+ * M7 4B. Kept under M2's own name so nothing in this module's call sites changed.
+ */
 function escapeForPrompt(value: string): string {
-  return value.replace(/[\p{Cc}]/gu, '').replace(/[*_`[\]<>]/g, '').slice(0, MAX_CATEGORY_NAME);
+  return sanitiseDisplayText(value, MAX_CATEGORY_NAME);
 }
 
 function addOneMonth(year: string, month: string): string {
