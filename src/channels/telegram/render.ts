@@ -233,14 +233,19 @@ export const CATEGORY_USAGE = [
 export interface BudgetLine {
   name: string;
   capMinorUnits: MinorUnits;
-  /** Null when nothing has been logged in this cycle yet, so no snapshot exists. */
-  snapshotCapMinorUnits: MinorUnits | null;
 }
 
 /**
  * `/budget` with no arguments shows the **current-period snapshot** (M4, confirmed
- * 5 Sep). The two only differ right after a mid-cycle change, and then both are shown
- * — the user needs to know this month is still running on the old figure.
+ * 5 Sep).
+ *
+ * M4's page adds "only differs from the standing rule right after a mid-period change,
+ * in which case show both" — but its implementation makes that unreachable:
+ * `setCap` updates the standing budget *and* the materialised snapshot for the current
+ * cycle in the same call (`default-budget-service.ts:168-174`), precisely so the user's
+ * "my budget is 300 now" means now. There is therefore no second figure to show, and a
+ * branch rendering one would be dead code pretending to be a feature. The caller
+ * resolves snapshot-or-standing before calling; this renders the one number.
  */
 export function renderBudgetList(
   lines: readonly BudgetLine[],
@@ -251,15 +256,9 @@ export function renderBudgetList(
     return 'You have no budgets yet. Set one with /budget <category> <amount>.';
   }
 
-  const rendered = lines.map((line) => {
-    const name = sanitiseDisplayText(line.name);
-    const standing = formatMoney(line.capMinorUnits, currency);
-    if (line.snapshotCapMinorUnits === null || line.snapshotCapMinorUnits === line.capMinorUnits) {
-      return `- ${name}: ${standing}`;
-    }
-    const snapshot = formatMoney(line.snapshotCapMinorUnits, currency);
-    return `- ${name}: ${snapshot} this cycle (${standing} from next cycle)`;
-  });
+  const rendered = lines.map(
+    (line) => `- ${sanitiseDisplayText(line.name)}: ${formatMoney(line.capMinorUnits, currency)}`,
+  );
 
   return [
     `Your budgets for ${formatPeriod(period)}`,

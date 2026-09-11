@@ -6,6 +6,8 @@ import type { OnboardingService } from '../../../src/core/identity/onboarding';
 import { createEntitlementService } from '../../../src/core/entitlements/default-entitlement-service';
 import type { ResolvedUser, UserSettings } from '../../../src/core/identity/identity-service';
 import type { Channel, UserId } from '../../../src/core/shared/common';
+import type { OutboundMessage } from '../../../src/core/shared/messaging';
+import { parseUpdate } from '../../../src/channels/telegram/update-parser';
 import { NoopLogger } from '../../../src/observability/log';
 import { createDomainServices, type DomainServices } from '../../support/domain-services';
 import { FakeMessageSender } from '../../support/fake-message-sender';
@@ -186,6 +188,36 @@ export function createHarness(now: string | number = '2026-09-11T02:00:00Z'): Ha
     callbacks,
     clock,
   };
+}
+
+// ---- driving a command ----------------------------------------------------------
+
+/**
+ * Send one message and return the single reply.
+ *
+ * Commands are exercised through the dispatcher rather than by calling `handle`
+ * directly, because a handler in isolation proves nothing about the two things most
+ * likely to break it: that the router reaches it with the tokens it expects, and that
+ * a refusal it throws is rendered rather than escaping as an apology.
+ *
+ * Set-up (`seedCategory`, `spend`) goes straight to the services on purpose — Free
+ * admits five messages per local day, and a test should spend that budget on the
+ * assertion, not on its fixtures.
+ */
+export async function reply(h: Harness, text: string): Promise<string> {
+  h.sender.sent.length = 0;
+  await h.dispatcher.dispatch(parseUpdate(textUpdate(text)));
+  return h.sender.onlyText;
+}
+
+/** The reply plus its keyboard, for the handlers that send one. */
+export async function replyMessage(h: Harness, text: string): Promise<OutboundMessage> {
+  h.sender.sent.length = 0;
+  await h.dispatcher.dispatch(parseUpdate(textUpdate(text)));
+  if (h.sender.sent.length !== 1) {
+    throw new Error(`expected exactly one message, got ${h.sender.sent.length}`);
+  }
+  return h.sender.sent[0]!.message;
 }
 
 // ---- update fixtures ------------------------------------------------------------

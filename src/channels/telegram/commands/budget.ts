@@ -55,10 +55,12 @@ export const budgetCommand: CommandHandler = {
     const views = await context.services.budgets.currentBudgets(userId, localDate);
     const names = nameIndex(await context.services.categories.list(userId, { includeArchived: true }));
 
+    // The current cycle's snapshot is what the user is actually living under; the
+    // standing figure only stands in when nothing has been logged this cycle yet and
+    // no snapshot row exists (M4 has deliberately no cron opening periods in advance).
     let lines: BudgetLine[] = views.map((view) => ({
       name: view.budget.categoryId === null ? 'Everything' : names.get(view.budget.categoryId) ?? 'Unknown',
-      capMinorUnits: view.budget.capMinorUnits,
-      snapshotCapMinorUnits: view.snapshotCapMinorUnits,
+      capMinorUnits: view.snapshotCapMinorUnits ?? view.budget.capMinorUnits,
     }));
 
     let period = views[0]?.period;
@@ -69,8 +71,7 @@ export const budgetCommand: CommandHandler = {
       period = only[0]?.period ?? period;
       lines = only.map((view) => ({
         name: category.name,
-        capMinorUnits: view.budget.capMinorUnits,
-        snapshotCapMinorUnits: view.snapshotCapMinorUnits,
+        capMinorUnits: view.snapshotCapMinorUnits ?? view.budget.capMinorUnits,
       }));
       if (lines.length === 0) {
         return { text: `"${category.name}" has no budget yet. Set one with /budget "${category.name}" <amount>.` };

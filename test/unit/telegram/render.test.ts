@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_INLINE_OPTIONS,
   TELEGRAM_MAX_MESSAGE,
+  formatShortDate,
+  historyCallbackData,
   paginate,
+  parseHistoryCallbackData,
   refusalText,
   renderAccountSummary,
+  renderHistoryPage,
   renderOnboardingReply,
   renderRefusal,
 } from '../../../src/channels/telegram/render';
@@ -183,5 +187,54 @@ describe('pagination', () => {
   it('defaults to Telegram s own limit', () => {
     expect(TELEGRAM_MAX_MESSAGE).toBe(4096);
     expect(paginate('x'.repeat(5000)).every((c) => c.length <= 4096)).toBe(true);
+  });
+});
+
+// ---- stage 4C's views -----------------------------------------------------------
+
+describe('history paging', () => {
+  const line = {
+    occurredOn: '2026-09-11',
+    direction: 'expense' as const,
+    amountMinorUnits: 1250n,
+    categoryName: 'Food',
+    merchant: null,
+    note: null,
+  };
+
+  it('round-trips a cursor through the callback data', () => {
+    expect(parseHistoryCallbackData(historyCallbackData('abc123'))).toBe('abc123');
+  });
+
+  it('ignores a prefix it does not own, and an empty cursor', () => {
+    expect(parseHistoryCallbackData('ob:timezone:Australia/Sydney')).toBeNull();
+    expect(parseHistoryCallbackData('hist:')).toBeNull();
+  });
+
+  it('drops the button rather than sending a cursor Telegram will reject', () => {
+    // Telegram caps `callback_data` at 64 bytes and rejects the whole send above it.
+    // A page with no button is recoverable; a 400 is a reply the user never sees.
+    const message = renderHistoryPage([line], 'AUD', 'x'.repeat(200));
+
+    expect(message.text).toContain('Food');
+    expect(message.replyMarkup).toBeUndefined();
+  });
+
+  it('keeps a cursor that fits', () => {
+    const message = renderHistoryPage([line], 'AUD', 'cursor-1');
+
+    expect(message.replyMarkup).toBeDefined();
+  });
+});
+
+describe('short dates', () => {
+  it('reads as a date a person would say', () => {
+    expect(formatShortDate('2026-09-11')).toBe('11 Sep');
+    expect(formatShortDate('2026-01-05')).toBe('5 Jan');
+    expect(formatShortDate('2026-12-31')).toBe('31 Dec');
+  });
+
+  it('returns anything unparseable unchanged rather than inventing a month', () => {
+    expect(formatShortDate('not-a-date')).toBe('not-a-date');
   });
 });
