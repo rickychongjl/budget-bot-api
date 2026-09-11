@@ -96,7 +96,7 @@ export interface LedgerReads {
 
   /** `expenses - refunds`, `income` excluded, `status = 'confirmed'` only. */
   sumInPeriod(userId: UserId, budgetPeriodId: Id, upTo: LocalDate | null): Promise<MinorUnits>;
-  sumOnLocalDate(userId: UserId, localDate: LocalDate): Promise<MinorUnits>;
+  sumOnLocalDate(userId: UserId, localDate: LocalDate, categoryId?: Id): Promise<MinorUnits>;
 }
 
 export interface LedgerWrites {

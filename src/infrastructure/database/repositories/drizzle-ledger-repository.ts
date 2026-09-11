@@ -278,11 +278,24 @@ function operations(x: DatabaseExecutor): LedgerReads & LedgerWrites {
       return BigInt(row?.net ?? '0');
     },
 
-    async sumOnLocalDate(userId: UserId, localDate: LocalDate): Promise<MinorUnits> {
+    async sumOnLocalDate(
+      userId: UserId,
+      localDate: LocalDate,
+      categoryId?: Id,
+    ): Promise<MinorUnits> {
+      // `transaction_category_date (category_id, occurred_on) where confirmed` already
+      // covers the narrowed form, so this costs no new index.
       const [row] = await x
         .select({ net: NET_SPEND })
         .from(transaction)
-        .where(and(eq(transaction.userId, userId), eq(transaction.occurredOn, localDate), CONFIRMED));
+        .where(
+          and(
+            eq(transaction.userId, userId),
+            eq(transaction.occurredOn, localDate),
+            CONFIRMED,
+            categoryId === undefined ? undefined : eq(transaction.categoryId, categoryId),
+          ),
+        );
       return BigInt(row?.net ?? '0');
     },
 
@@ -395,8 +408,8 @@ export class DrizzleLedgerRepository implements LedgerRepository<DatabaseExecuto
   sumInPeriod(userId: UserId, budgetPeriodId: Id, upTo: LocalDate | null): Promise<MinorUnits> {
     return this.root.sumInPeriod(userId, budgetPeriodId, upTo);
   }
-  sumOnLocalDate(userId: UserId, localDate: LocalDate): Promise<MinorUnits> {
-    return this.root.sumOnLocalDate(userId, localDate);
+  sumOnLocalDate(userId: UserId, localDate: LocalDate, categoryId?: Id): Promise<MinorUnits> {
+    return this.root.sumOnLocalDate(userId, localDate, categoryId);
   }
   insertCategory(input: NewCategoryInput): Promise<Category> {
     return this.root.insertCategory(input);

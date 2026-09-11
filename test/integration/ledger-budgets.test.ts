@@ -4,6 +4,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
 import identityDdl from '../../src/infrastructure/database/migrations/0000_identity.sql?raw';
 import ledgerDdl from '../../src/infrastructure/database/migrations/0003_flashy_true_believers.sql?raw';
+import allowanceDdl from '../../src/infrastructure/database/migrations/0004_faithful_baron_zemo.sql?raw';
 import { DefaultBudgetService } from '../../src/core/budgets';
 import {
   DefaultCategoryService,
@@ -106,6 +107,8 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
   beforeAll(async () => {
     await pg.exec(identityDdl);
     await pg.exec(ledgerDdl);
+    // M5's migration adds `category.reminder_enabled`, which M3's own reads now select.
+    await pg.exec(allowanceDdl);
   }, 60_000);
 
   afterAll(async () => {
@@ -333,6 +336,53 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
     expect(await ledger.spendInPeriod(userId, expense.budgetPeriodId as string)).toBe(7_500n);
     expect(await ledger.spentOn(userId, '2026-09-10')).toBe(7_500n);
     expect(await ledger.spentOn(otherUserId, '2026-09-10')).toBe(0n);
+  });
+
+  it('narrows spentOn to one category when asked, keeping the netting and the filters', async () => {
+    // Added for M5 (Phase 3): `available_today` is per category, so the day's spend has
+    // to be too. The netting, the income exclusion and the confirmed-only filter must
+    // all still apply once a category predicate joins them.
+    const food = await budgeted('Food');
+    const fun = await budgeted('Fun');
+    const base = {
+      currencyCode: 'AUD',
+      occurredAt: Date.parse('2026-09-10T02:00:00Z'),
+      occurredOn: '2026-09-10',
+      rawText: 'x',
+      parseRoute: 'command' as const,
+    };
+    await ledger.record(userId, {
+      ...base,
+      categoryId: food.category.id,
+      direction: 'expense',
+      amountMinorUnits: 10_000n,
+    });
+    await ledger.record(userId, {
+      ...base,
+      categoryId: food.category.id,
+      direction: 'refund',
+      amountMinorUnits: 2_500n,
+    });
+    await ledger.record(userId, {
+      ...base,
+      categoryId: food.category.id,
+      direction: 'income',
+      amountMinorUnits: 500_000n,
+    });
+    await ledger.record(userId, {
+      ...base,
+      categoryId: fun.category.id,
+      direction: 'expense',
+      amountMinorUnits: 4_000n,
+    });
+
+    expect(await ledger.spentOn(userId, '2026-09-10', food.category.id)).toBe(7_500n);
+    expect(await ledger.spentOn(userId, '2026-09-10', fun.category.id)).toBe(4_000n);
+    // Omitting the category still returns the user-wide total, so existing callers are
+    // genuinely unaffected by the widening.
+    expect(await ledger.spentOn(userId, '2026-09-10')).toBe(11_500n);
+    // A category with nothing logged is 0, never null.
+    expect(await ledger.spentOn(userId, '2026-09-11', food.category.id)).toBe(0n);
   });
 
   it('excludes soft-deleted rows from every read behind budget maths', async () => {

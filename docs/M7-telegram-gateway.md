@@ -111,6 +111,66 @@ A user never sees a stack trace, error code, or the word "exception." Three outc
 
 ---
 
+## Handed over from M5 (Phase 3) — added 11 Sep 2026
+
+M5 landed complete on `phase-3`, but with **delivery deliberately deferred to this
+module** (agreed with Ricky, 11 Sep). M5 is built against the ports and fully tested;
+nothing in it reaches Telegram yet. These four items are M7's, and until they land the
+07:00 reminder computes correctly and sends nothing.
+
+1. **`MessageSender` against the Telegram Bot API** — `channels/telegram/telegram-message-sender.ts`,
+   checklist item 5 below. M5 is its only caller today and depends on the exact
+   classification in "Outbound delivery": 403 → `{status:'skipped', reason:'blocked'}`,
+   429/5xx → `{status:'retryable', retryAfterSeconds?}`, 400 → `{status:'permanent'}`.
+   M5 maps those onto its own row states, so a misclassification silently turns a
+   retryable failure into a dead bundle. `test/support/fake-message-sender.ts` is the
+   only implementation in the repo right now.
+
+2. **Make `src/index.ts` a real composition root.** It currently wires nothing — no
+   `createDatabase(env.HYPERDRIVE.connectionString)`, no repositories, no services, just
+   `/health` and a hello-world `scheduled`. Every module's `index.ts` header carries its
+   intended wiring; `core/allowance/index.ts` has M5's, including the
+   `createReminderCapacityReader` seam M8's `CapacityReader` needs. This was already
+   logged as M7's in M3/M4's build-log entry; M5 did not change it.
+
+3. **`POST /internal/send-allowance`**, guarded by a shared-secret header against
+   `INTERNAL_DISPATCH_SECRET` (already declared in `Env`), never routed publicly. Body
+   carries a `userId`; the handler calls `allowance.computeAndSend(userId)` and returns
+   the outcome. One user per invocation is the point — each gets a fresh 10ms CPU budget.
+
+4. **Replace the hello-world `scheduled` body** with the fan-out:
+   `allowance.findDue(controller.scheduledTime, 50)` → one self-subrequest to
+   `/internal/send-allowance` per due user. Pass `controller.scheduledTime`, not
+   `Date.now()`, so a delayed invocation still resolves the window it was scheduled for.
+   The 50 is the Workers Free subrequest ceiling; `wrangler.toml` already has
+   `crons = ["*/15 * * * *"]`.
+
+**What M5 already handles, so M7 must not re-implement it:** which users are due
+(`findDue` — one indexed query doing per-user timezone maths in SQL), bundling every
+reminder-eligible category into one message, revalidation at dispatch, the once-only
+guarantee, the 3-attempt retry budget, and all allowance wording (`renderBundledReminder`
+/ `renderAllowanceLine`). M7 delivers the string M5 hands it and reports the result.
+
+**Wiring detail that is easy to miss:** `DefaultLedgerService` and
+`DefaultCategoryService` both take an optional `allowance` dependency — pass
+`DefaultAllowanceService` in as both. It satisfies `AllowanceNotifier` structurally.
+`ledgerChanged` is a no-op (below), but `categoryArchived` is not: it clears
+`reminder_enabled` and retires the day's pending row. Omit it and archiving a category
+leaves its reminder flag set. Nothing wrong is delivered — dispatch revalidation and
+`countReminderCategories` both filter archived rows — but `/remind` would list a
+category that can never fire.
+
+**One M5 decision M7 inherits:** `AllowanceNotifier.ledgerChanged` is a documented no-op,
+because `available_today` is derived rather than stored. M7's command handlers that need
+an allowance line (`/today`, a `/delete` confirmation, a correction) call
+`availableToday` directly — do not expect `ledgerChanged` to have refreshed anything.
+
+**Also inherited:** M5's `/remind` contract refuses `NO_BUDGET` for a category with no
+active budget — a reminder needs a cap to divide. `/remind` should offer only budgeted
+categories rather than surfacing that refusal after the fact.
+
+---
+
 ## Task checklist
 1. Migration for `inbound_update` (`infrastructure/database/schema/platform.ts` per M1's file split).
 2. Webhook handler: secret verification → dedup insert → 200 → `ctx.waitUntil` background processing.

@@ -1,5 +1,7 @@
+import type { AllowanceSend } from '../../src/core/allowance';
 import type { Budget, BudgetPeriod } from '../../src/core/budgets';
 import type { Category, Transaction } from '../../src/core/ledger';
+import type { Id } from '../../src/core/shared/common';
 
 /**
  * The shared "world" the in-memory M3 and M4 repositories both write to, and the
@@ -22,6 +24,13 @@ export class InMemoryStore {
   transactions: Transaction[] = [];
   budgets: Budget[] = [];
   periods: BudgetPeriod[] = [];
+  allowanceSends: AllowanceSend[] = [];
+  /**
+   * `category.reminder_enabled`, held beside the rows rather than on them: M3's
+   * `Category` domain type does not expose the column (it is M5's), and inventing a
+   * field on it here would make the fake diverge from the contract under test.
+   */
+  reminderEnabled = new Set<Id>();
 
   /** Rows are treated as immutable, so a shallow copy of each array is a real snapshot. */
   snapshot(): InMemoryStoreSnapshot {
@@ -30,6 +39,8 @@ export class InMemoryStore {
       transactions: [...this.transactions],
       budgets: [...this.budgets],
       periods: [...this.periods],
+      allowanceSends: [...this.allowanceSends],
+      reminderEnabled: new Set(this.reminderEnabled),
     };
   }
 
@@ -38,6 +49,8 @@ export class InMemoryStore {
     this.transactions = [...snapshot.transactions];
     this.budgets = [...snapshot.budgets];
     this.periods = [...snapshot.periods];
+    this.allowanceSends = [...snapshot.allowanceSends];
+    this.reminderEnabled = new Set(snapshot.reminderEnabled);
   }
 
   /** Snapshot, run, and undo every table on failure — the transaction boundary. */
@@ -57,4 +70,6 @@ export interface InMemoryStoreSnapshot {
   transactions: readonly Transaction[];
   budgets: readonly Budget[];
   periods: readonly BudgetPeriod[];
+  allowanceSends: readonly AllowanceSend[];
+  reminderEnabled: ReadonlySet<Id>;
 }

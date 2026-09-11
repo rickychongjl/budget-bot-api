@@ -5,7 +5,7 @@ import type { Category, CategoryService } from '../ledger';
 import type { Clock } from '../shared/clock';
 import type { CurrencyCode, Id, MinorUnits, RefusalCode, Tier, UserId } from '../shared/common';
 import type { EntitlementService } from '../entitlements/entitlement-service';
-import type { ReminderSelectionService } from '../ports/reminder-selection-service';
+import type { ReminderSelectionService } from '../allowance/reminder-selection-service';
 import type { OnboardingStateStore } from './default-identity-service';
 import { RefusalError } from './errors';
 import type { IdentityService, UserSettings } from './identity-service';

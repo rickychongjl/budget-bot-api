@@ -1206,3 +1206,153 @@ tests passed, 0 skipped; 302 in the full suite, 0 skipped.** Two things came out
    `core/entitlements/local-time.ts` delegating to `core/shared/local-date.ts`, which is
    pure in-process `Intl` work, and the same test passed at the default 5s timeout on
    the very next run with that code in place.
+
+---
+
+## M5 — Daily Allowance & Scheduler — 2026-09-11
+
+**Branch:** `phase-3`
+
+Phase 3's single module. One migration, `0004_faithful_baron_zemo.sql`, carries
+`daily_allowance_send` plus one column on M3's `category`. `core/ports/` is now gone
+entirely — M5 claimed its last resident.
+
+### Decisions taken (Ricky, 11 Sep)
+
+1. **The reminder flag lives on `category.reminder_enabled`, and M5 writes it directly.**
+   Ricky's call: "keep it on the category table, it's only 1 column, and it's genuinely
+   related to category." This is a **deliberate, narrow exception to CLAUDE.md's "one
+   module owns each table"**, logged here rather than resolved silently. M5 touches
+   exactly that column and never the rest of the row; M3 clears it when archiving via
+   `AllowanceNotifier.categoryArchived` rather than writing it itself. The alternative
+   considered was two pass-through methods on M3's `CategoryService`. Closes M2's open
+   question 2 and M8's open question 3.
+2. **Delivery is deferred to Phase 4.** No `MessageSender` implementation, no
+   `/internal/send-allowance` route, no composition root, no `scheduled` body. M5 is
+   built against the ports and fully tested; nothing reaches Telegram yet. The four
+   items M7 inherits are written out in `docs/M7-telegram-gateway.md`, "Handed over
+   from M5 (Phase 3)".
+3. **`LedgerService.spentOn` gained an optional `categoryId`.** `AllowanceView.spentToday`
+   is per category; `spentOn` was user-wide. Additive, so existing callers are
+   unaffected, and it keeps every ledger read behind M3's `status = 'confirmed'` filter
+   instead of M5 re-implementing it against `transaction`. The alternative — an M5-owned
+   read of M3's table — was rejected for the same reason M3/M4 refined their own ports.
+   `transaction_category_date` already covers the narrowed query, so no new index.
+4. **A reminder requires an active budget on the category.** `enable` refuses `NO_BUDGET`
+   otherwise — a reminder's whole content is "you can spend $X today", which needs a cap
+   to divide. This is also what lets `daily_allowance_send.budget_period_id` stay
+   `not null`: a reminder-eligible category always has a period to materialise.
+5. **`AllowanceNotifier.ledgerChanged` is a documented no-op.** `available_today` is
+   derived on every read (`dailyTarget - spentToday`) and never stored — only
+   `daily_target` is persisted, and it is frozen for the date by design — so there is no
+   cached value to invalidate. M6's `pipeline.ts` `availableToday` call is the single
+   real trigger; it needs the return value for the confirmation reply anyway. This was
+   two DB round trips per logged expense doing one job. The port stays on M3's contract
+   so no shipped M3 code moved. **Closes M6's open question 4.**
+
+### Calls I made, flagged rather than assumed
+
+- **`findDue`/`computeAndSend` are now per-user, not per-`(user, category)`.** The
+  Phase 0 stub predated the 5 Sep bundling decision and returned pairs, which would have
+  to be de-duplicated back to a user before anything could be sent; M5's own cron
+  pseudo-code says "for each due *user*". Refined under M1's "the owning module may
+  refine its committed port" licence, the same one M3/M4 used for `currentBudgets`.
+  `availableToday` is unchanged. `AllowanceView` also gained `categoryName`, so the
+  renderer does not need a second lookup per line.
+- **The due window is `[reminder, reminder + 60min)`, not a strict 15-minute tick.**
+  M5's plan describes exact equality against `reminder_local_time`. Cloudflare cron
+  fires "approximately" on schedule and ticks get dropped, and there is no staging
+  Worker to notice that on (§5.7). 60 minutes absorbs drift, gives the 3-attempt retry
+  budget four ticks to play out, and still never delivers a morning reminder at 3pm.
+  Widening it cannot cause a double send — once-only comes from the unique index plus
+  the terminal-status filter, not from the window.
+- **`computeAndSend` is idempotent per local date at the service level**, not just via
+  the due scan. It bundles only rows still `pending`; a duplicated subrequest or a
+  double-fired tick sends nothing. Worth stating because the first draft relied on the
+  due scan alone, and a test written to assert once-only found it.
+
+### Built
+
+- **`daily_allowance_send`** exactly as M5's plan specifies, plus a
+  `(user_id, local_date)` index for the per-user read `/today` and the bundle both make.
+  `unique (user_id, category_id, local_date)` is the double-send guard;
+  `delivery_status` defaults to `not_applicable` so a budgeted-but-unreminded category's
+  row never enters the `pending` retry index.
+- **`computeDailyTarget`** (`core/allowance/daily-target.ts`) — the last Phase 0 stub.
+  Clamps negatives to `0n` *before* dividing, which is what makes BigInt's
+  truncate-toward-zero agree with the doc's `floor`; throws on `daysLeft < 1` rather
+  than dividing by zero.
+- **`DefaultAllowanceService`** — `availableToday` (compute-and-persist on demand, so
+  the morning message and the day's first `/today` always agree), `computeAndSend` (the
+  four-step bundle: gather → revalidate fresh → skip-if-empty → one send, one shared
+  outcome), `findDue`, and both `AllowanceNotifier` methods.
+- **`DefaultReminderSelectionService`** — implements the contract M2's onboarding step 5
+  has been calling since Phase 1. Idempotent `enable` checked *before* the gate, so a
+  Free user re-confirming their existing pick is not told they are over the limit.
+- **`DrizzleAllowanceRepository`** — covers both `daily_allowance_send` and
+  `category.reminder_enabled`. `findDueUsers` does per-user timezone maths in SQL
+  (`at time zone` on each user's own zone), so the cron stays one indexed scan.
+- **`createReminderCapacityReader`** — the `countReminderCategories` half of M8's
+  `CapacityReader`, which has had no data source since Phase 1.
+- **Message renderers** — bundled and single-category, per the plan's "Message shape".
+  Overspent categories move to their own sentence rather than reading as "spend -$4".
+
+### Assumptions worth flagging
+
+- **`findDueUsers` also requires an active `channel_connection`, `status = 'active'` and
+  `onboarding_step = 'done'`.** Not in M5's plan; waking a user we cannot deliver to
+  would burn a subrequest and mark rows against a send that never happened.
+- **The due query guards `timezone <> ''`.** M2's pre-onboarding sentinel is not a valid
+  zone and `at time zone ''` raises — without the guard, one unfinished signup breaks
+  the query for *every* user. There is a test for exactly this.
+- **A `pending` row keeps a user due**; that is how a retryable failure gets its next
+  attempt inside the window. `sent`/`skipped`/`failed` are terminal.
+- **The in-memory `findDueUsers` throws rather than imitating the SQL.** Its whole
+  substance is Postgres timezone arithmetic, and a hand-rolled TypeScript version would
+  pass while the real query was wrong. `test/integration/allowance.test.ts` covers it
+  against real Postgres instead, including Sydney/Adelaide/Perth and a DST transition.
+- **`escapeCategoryName` duplicates M2's private `escapeForPrompt`.** Deliberate:
+  CLAUDE.md says not to fold a rename sweep into a feature change. Worth unifying into
+  `core/shared` when M7 lands and there are three copies.
+- **`formatMoney` drops a `.00` fraction** (`$18`, not `$18.00`) to match the plan's own
+  example wording. Non-zero fractions are always shown in full.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors. `npm test` — **417 passed / 0 skipped** across 28
+files (up from 302/0): 4 new unit suites under `test/unit/allowance/` (85 tests),
+`test/integration/allowance.test.ts` (32), and one added to M3's suite covering the
+narrowed `spentOn` against real SQL.
+
+`npm run test:integration` — 62 passed / 0 skipped, including M2's and M8's Neon suites.
+
+`npm run db:generate` — `0004_faithful_baron_zemo.sql` generated, inspected and
+committed with its snapshot. The `category` change is a `not null default false` column
+add, so it is safe on a populated table.
+
+**`test/unit/scaffold.test.ts` is retired**, as its own header said it would be:
+`computeDailyTarget` was the last Phase 0 stub it guarded.
+
+`test/integration/ledger-budgets.test.ts` now also executes `0004`, because M3's own
+category reads select `reminder_enabled`. That suite builds its schema from the
+committed migration files rather than a hand-copied DDL block, which is precisely why
+the omission surfaced as a failing test rather than as production drift.
+
+### Open questions
+
+1. **Nothing has been delivered to Telegram.** The first real 07:00 send happens in
+   Phase 4, against production, with no staging Worker to rehearse on (§5.7) — the same
+   risk M1 flagged for the hello-world cron, now with a user-visible message attached.
+   Worth a manual `/internal/send-allowance` call against a real chat before trusting
+   the cron.
+2. **`DUE_WINDOW_MINUTES = 60` is my number, not Ricky's.** If a reminder arriving as
+   late as 07:59 after a missed tick reads as wrong, drop it to 30 — the constant is in
+   `core/allowance/default-allowance-service.ts` and nothing else depends on its value.
+3. **M4's `deactivate` does not notify M5.** Deactivating a budget leaves
+   `reminder_enabled` set; dispatch revalidation drops the category from the bundle, so
+   nothing wrong is sent, but `/remind` will list a category that silently never fires.
+   Clearing the flag on deactivate would need a second `AllowanceNotifier` method and a
+   change to M4 — out of scope for this PR, worth deciding when M7 wires `/remind`.
+4. **`reminder_local_time` is read but never written.** M5 honours whatever the column
+   says (M2's open question 6), and there is an integration test proving a 09:00 user is
+   woken at 09:00. Nothing exposes a way to change it, which is correct for this pass.

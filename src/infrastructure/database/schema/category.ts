@@ -18,6 +18,15 @@ import { appUser } from './identity';
  *   - `is_archived boolean not null default false`; tier capacity is simply the count
  *     of non-archived rows (master plan §5.1, round 4) — no "used vs never used"
  *     carve-out, because the gate lives on the archive action itself.
+ *
+ * **`reminder_enabled` is M5's column on M3's table** — a deliberate, narrow exception
+ * to CLAUDE.md's "one module owns each table", agreed 11 Sep (see `docs/build-log.md`,
+ * M5's entry). M2's onboarding step 5, M8's `countReminderCategories` and M5's 07:00
+ * dispatch all need "does this category carry a reminder", and it is genuinely a
+ * property of the category rather than of a day's output — `daily_allowance_send` is
+ * per-day and cannot hold it. M5's repository reads and writes this one column and
+ * never touches the rest of the row; M3 clears it when it archives a category (via
+ * `AllowanceNotifier.categoryArchived`) rather than writing it directly.
  */
 
 export const category = pgTable(
@@ -33,10 +42,14 @@ export const category = pgTable(
     normalizedName: text('normalized_name').notNull(),
     sortOrder: integer('sort_order').notNull().default(0),
     isArchived: boolean('is_archived').notNull().default(false),
+    /** M5-owned. Requires an active budget on the category to turn on; 1 Free / 5 Premium. */
+    reminderEnabled: boolean('reminder_enabled').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     unique('category_user_normalized_name_unique').on(t.userId, t.normalizedName),
     index('category_user_active').on(t.userId, t.sortOrder),
+    /** Backs M8's capacity count and M5's due scan — both only ever want the enabled ones. */
+    index('category_reminder_enabled').on(t.userId).where(sql`${t.reminderEnabled}`),
   ],
 );

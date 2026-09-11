@@ -147,8 +147,16 @@ export class InMemoryLedgerRepository implements LedgerRepository<InMemoryStore>
     );
   }
 
-  async sumOnLocalDate(userId: UserId, localDate: LocalDate): Promise<MinorUnits> {
-    return net(this.confirmed(userId).filter((t) => t.occurredOn === localDate));
+  async sumOnLocalDate(
+    userId: UserId,
+    localDate: LocalDate,
+    categoryId?: Id,
+  ): Promise<MinorUnits> {
+    return net(
+      this.confirmed(userId).filter(
+        (t) => t.occurredOn === localDate && (categoryId === undefined || t.categoryId === categoryId),
+      ),
+    );
   }
 
   async insertTransaction(input: NewTransactionInput): Promise<Transaction> {
