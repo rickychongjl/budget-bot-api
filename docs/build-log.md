@@ -1356,3 +1356,96 @@ the omission surfaced as a failing test rather than as production drift.
 4. **`reminder_local_time` is read but never written.** M5 honours whatever the column
    says (M2's open question 6), and there is an integration test proving a 09:00 user is
    woken at 09:00. Nothing exposes a way to change it, which is correct for this pass.
+
+## M7 stage 4A — Outbound delivery & composition root — 2026-09-11
+
+Phase 4's first stage. M5 landed complete but deliberately deferred delivery to this
+module; these are the four handover items from `docs/M7-telegram-gateway.md`
+("Handed over from M5"). Until this stage, the 07:00 reminder computed correctly and
+sent nothing.
+
+Scope is outbound only. The webhook, routing and commands are stages 4B–4D; see
+`docs/M7-phase-4-plan.md`.
+
+### Built
+
+- **`channels/telegram/telegram-api-client.ts`** — the only code in the repo that calls
+  the Telegram Bot API. Returns a typed `TelegramCallOutcome` instead of throwing,
+  because the entire job of this layer is that every failure is classifiable; an
+  exception escaping into `ctx.waitUntil` would turn a rate-limit into an unhandled
+  rejection. Injectable `fetch`, mirroring `OpenAiLlmParser`'s seam.
+- **`channels/telegram/telegram-message-sender.ts`** — `MessageSender` over that client.
+  The whole substance is M7's classification matrix: 403 → `skipped/blocked`,
+  429 → `retryable` + `retryAfterSeconds`, 5xx/network → `retryable`, 400 → `permanent`.
+- **`src/index.ts` rewritten as the composition root** — `createDatabase`, five Drizzle
+  repositories, every core service, wired per each module's own `index.ts` header.
+  `createApp(makeServices)` and `runScheduled(controller, env, services, fetch)` take
+  their collaborators as parameters so the real routing and guards are testable without
+  a database. 4B's webhook will use the same seam.
+- **`POST /internal/send-allowance`** — `X-Internal-Dispatch-Secret` compared in
+  constant time against `INTERNAL_DISPATCH_SECRET`, then `computeAndSend(userId)`.
+  Returns M5's `SendOutcome` verbatim.
+- **`scheduled`** — M1's hello-world replaced with
+  `findDue(controller.scheduledTime, 50)` → one subrequest per due user.
+- **`wrangler.toml`** — new `[vars] WORKER_BASE_URL`.
+
+### Assumed
+
+- **Plain text, no `parse_mode`, bot-wide.** `core/allowance/messages.ts` *strips*
+  markup characters rather than escaping them and its header says "M7 escapes nothing
+  further" — which only holds if Telegram is never asked to interpret markup. This also
+  settles M7's open decision 3 (`/stats` plain text) in the direction M11 recommends.
+  4B's `render.ts` inherits it.
+- **`WORKER_BASE_URL` is a new binding, not in any plan.** A `scheduled` invocation has
+  no inbound request to derive an origin from, and the fan-out has to be a *real*
+  subrequest — that is what gives each send its own 10ms CPU budget. Committed with a
+  placeholder; it must be set to the deployed origin before the first tick matters.
+- **The sender never deactivates a connection.** M7's page says "403 → deactivate and
+  report skipped", but `DefaultAllowanceService.computeAndSend` already calls
+  `deactivateConnection` on a `skipped` result. The sender only classifies; the caller
+  decides. Wiring it in both places would be a double call. 4B's inbound reply path does
+  its own deactivation.
+- **401 and 404 are classified `permanent`**, which M7's page does not name. Both are
+  misconfigurations a retry cannot fix; `retryable` would re-attempt every 15 minutes
+  forever. They fail loudly instead.
+- **The two dependency cycles are broken with closures, not partially-built objects** —
+  M2↔M3 (`history` / `settingsOf`) and M5↔M3 (`spendInPeriod` / `AllowanceNotifier`),
+  the same way M5's own test harness breaks them. The explicit type annotations on
+  `ledger` and `allowance` are load-bearing: without them TypeScript cannot infer
+  either type (TS7022/TS7023).
+- **Services are built per invocation**, not at module scope —
+  `env.HYPERDRIVE.connectionString` is only valid inside a request or cron context and
+  an isolate outlives any one of them.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors. `npm test` — **440 passed / 0 skipped** across 30
+files, up from 417/0: 23 new tests in two suites under `test/unit/telegram/`
+(`telegram-message-sender.test.ts`, `composition-root.test.ts`) plus
+`test/support/fake-telegram-api.ts`. No existing test changed.
+
+`npm run test:integration` — 62 passed / 0 skipped against the real Neon branch,
+identical to M5's baseline. No schema change in this stage.
+
+`npm run db:generate` — not run; this stage adds no table. `inbound_update` and
+`pending_prompt` arrive in 4B as migration `0005`.
+
+**Not verified against a real Telegram chat.** Nothing here has been deployed, so the
+classification matrix is proven against a fake `fetch` only. The first real send is
+stage 4E's manual `POST /internal/send-allowance` — M5's own open question 1, and with
+production-only (§5.7) there is no staging Worker to rehearse on.
+
+### Open questions
+
+1. **`WORKER_BASE_URL` is a placeholder.** The cron fan-out will post to
+   `https://budge-bot-api.workers.dev` until it is set to the real origin. With
+   `workers_dev = false` that host does not resolve, so the fan-out would fail every
+   tick — silently, since M5 leaves rows `pending` and simply retries. Set it at 4E.
+2. **Nothing enforces the 4096-character cap yet.** M5's bundled reminder is short
+   enough in practice, and `paginate` belongs with the rest of the rendering in 4B — but
+   until then an unusually large bundle would be classified `permanent` (400) rather
+   than split.
+3. **`/internal/send-allowance` is reachable from the public internet**, protected only
+   by the shared secret. That is the design in M7's handover, and the constant-time
+   compare is implemented, but it is worth revisiting whether the route should also
+   require an internal-origin check once there is a custom domain.
