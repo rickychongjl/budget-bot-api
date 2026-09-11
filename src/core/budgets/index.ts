@@ -22,6 +22,7 @@
  */
 export type {
   Budget,
+  BudgetAllowanceNotifier,
   BudgetPeriod,
   BudgetService,
   BudgetSettingsReader,

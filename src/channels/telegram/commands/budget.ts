@@ -1,6 +1,6 @@
 import { MoneyError, toMinorUnits } from '../../../core/shared/money';
 import { RefusalError } from '../../../core/shared/errors';
-import { formatMoney } from '../../../core/allowance/messages';
+import { formatMoney, renderAllowanceLine } from '../../../core/allowance/messages';
 import type { CommandHandler } from '../command-router';
 import type { BudgetLine } from '../render';
 import { renderBudgetList } from '../render';
@@ -14,9 +14,10 @@ import { nameIndex, requireCategory, today } from './context';
  *   /budget "Eating Out" 300     set the cap
  *
  * `setCap` writes the standing budget **and** the current period's snapshot, because
- * the user means "my budget is 300 now", not "from next month" (M4). M5 recomputes the
- * daily target the following morning and never rewrites today's — that is M5's rule,
- * and this handler does not try to help.
+ * the user means "my budget is 300 now", not "from next month" (M4) — and M4 then has
+ * M5 re-price today's daily figure from the new cap (Ricky, 11 Sep: a raise today gives
+ * you more to spend today). The confirmation shows that figure by asking M5 for it,
+ * worded by M5's own `renderAllowanceLine` so it cannot disagree with `/today`.
  *
  * The amount is converted once, by M3's `toMinorUnits`, against the account's own
  * currency. A malformed or over-precise amount refuses **before** anything is written:
@@ -46,8 +47,13 @@ export const budgetCommand: CommandHandler = {
       const category = await requireCategory(context, userId, name);
       const cap = parseAmount(amount, settings.currencyCode);
       const saved = await context.services.budgets.setCap(userId, category.id, cap);
+      const headline = `${category.name} is now ${formatMoney(saved.capMinorUnits, settings.currencyCode)} a cycle.`;
+      // The same read `/today` makes — computing and persisting today's row if this is
+      // the first time anything has asked for it — so the figure here is the one the
+      // user will see for the rest of the day.
+      const [view] = await context.services.allowance.availableToday(userId, category.id);
       return {
-        text: `${category.name} is now ${formatMoney(saved.capMinorUnits, settings.currencyCode)} a cycle. The daily figure updates tomorrow morning.`,
+        text: view === undefined ? headline : `${headline} ${renderAllowanceLine(view, settings.currencyCode)}`,
       };
     }
 

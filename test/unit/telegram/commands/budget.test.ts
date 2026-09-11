@@ -73,6 +73,19 @@ describe('/budget', () => {
     expect(await reply(h, '/budget Eating Out 300')).toContain('quotes');
   });
 
+  it('confirms a new cap with what that means for today, in M5"s words', async () => {
+    const food = await h.seedCategory(USER, 'Food', { cap: 60000n });
+    // 24 days left on 11 Sep: $600 is $25 a day, and today's row now exists.
+    expect(await reply(h, '/today')).toBe('You can spend $25 on Food today to stay on budget.');
+
+    // Ricky, 11 Sep: a raise today is spendable today — $960 / 24 = $40, now.
+    expect(await reply(h, '/budget Food 960')).toBe(
+      'Food is now $960 a cycle. You can spend $40 on Food today to stay on budget.',
+    );
+    expect(await reply(h, '/today')).toBe('You can spend $40 on Food today to stay on budget.');
+    expect(await h.budgets.activeBudgets(USER)).toMatchObject([{ categoryId: food, capMinorUnits: 96000n }]);
+  });
+
   it('shows one figure after a mid-cycle change, because M4 moves the snapshot too', async () => {
     const food = await h.seedCategory(USER, 'Food', { cap: 60000n });
     // Logging materialises this cycle's snapshot at the old cap.

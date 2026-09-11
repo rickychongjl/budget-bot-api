@@ -1,6 +1,7 @@
+import type { BudgetAllowanceNotifier, BudgetPeriod } from '../budgets';
 import type { AllowanceNotifier } from '../ledger';
 import type { Clock } from '../shared/clock';
-import type { Channel, Id, Instant, LocalDate, UserId } from '../shared/common';
+import type { Channel, Id, Instant, LocalDate, MinorUnits, UserId } from '../shared/common';
 import { addLocalDays, daysInclusive, localDateAt } from '../shared/local-date';
 import type { ChannelConnection, MessageSender } from '../shared/messaging';
 import type { AllowanceRepository, AllowanceSend, ReminderCategory } from './allowance-repository';
@@ -59,21 +60,29 @@ interface ComputedTarget {
  * M5 — Daily Allowance & Scheduler.
  *
  * The one decision the rest of this class exists to protect: **`daily_target` is written
- * once per `(user, category, date)` and never recomputed for that date.** If it were
- * recomputed live from current spend, overspending at lunch would immediately spread
- * across the remaining days, `available_today` would quietly stay positive, and the user
- * would never see they had gone over. Persisting means today has a fixed budget: going
- * over is visible today as a negative number, and the correction arrives tomorrow from a
- * genuinely smaller remaining balance.
+ * once per `(user, category, date)` and never recomputed from today's spend.** If it
+ * were recomputed live from current spend, overspending at lunch would immediately
+ * spread across the remaining days, `available_today` would quietly stay positive, and
+ * the user would never see they had gone over. Persisting means today has a fixed
+ * budget: going over is visible today as a negative number, and the correction arrives
+ * tomorrow from a genuinely smaller remaining balance.
  *
  * So `availableToday` reads an existing row's target rather than recomputing it, and
  * `insertSend` returns the conflict *winner* rather than the value this invocation
  * calculated — two concurrent first-reads of the day agree on one number.
  *
+ * The single exception is `capChanged` (Ricky, 11 Sep): a cap set mid-cycle is meant
+ * to give the user more — or less — to spend *today*, not from tomorrow. That rewrite
+ * still takes spend only to the end of yesterday, so it cannot reintroduce the failure
+ * above: the trigger is the cap moving, never the day's own spend, and recomputing
+ * twice on one day gives the same number both times.
+ *
  * Delivery is bundled: one message per user per day covering every reminder-eligible
  * category, and every row in that bundle shares the send's outcome.
  */
-export class DefaultAllowanceService<X> implements DailyAllowanceService, AllowanceNotifier {
+export class DefaultAllowanceService<X>
+  implements DailyAllowanceService, AllowanceNotifier, BudgetAllowanceNotifier
+{
   private readonly repository: AllowanceRepository<X>;
   private readonly budgets: AllowanceBudgetReader;
   private readonly ledger: AllowanceSpendReader;
@@ -234,6 +243,34 @@ export class DefaultAllowanceService<X> implements DailyAllowanceService, Allowa
     }
   }
 
+  /**
+   * M4 calls this after `setCap` has moved the standing budget and the current cycle's
+   * snapshot. Re-prices today's persisted target from the new cap so the change is
+   * spendable today — regardless of delivery state, and without a second send: a row
+   * the 07:00 bundle already delivered keeps `sent` and its `sent_at`, and only the
+   * number moves. `/today` then shows the new figure; the morning message is history.
+   *
+   * No row for today means nothing to rewrite — the day's first read computes from the
+   * new snapshot anyway. No active budget means the category was uncapped in the same
+   * breath, and its row is left for M5's usual eligibility revalidation to retire.
+   */
+  async capChanged(userId: UserId, categoryId: Id): Promise<void> {
+    const { today } = await this.context(userId);
+    const send = await this.repository.findSend(userId, categoryId, today);
+    if (!send) return;
+
+    const budgets = await this.budgets.activeBudgets(userId);
+    const budget = budgets.find((b) => b.categoryId === categoryId);
+    if (!budget) return;
+
+    // `ensurePeriod` is a read here: the row's `budget_period_id` proves the period
+    // already exists, and `setCap` has just rewritten its cap. Going through M4 rather
+    // than reading the snapshot ourselves keeps the table M4's (master plan §2, rule 2).
+    const period = await this.budgets.ensurePeriod(userId, budget.id, today);
+    const dailyTarget = await this.targetFor(userId, period, today);
+    await this.repository.updateTarget(userId, categoryId, today, dailyTarget);
+  }
+
   // ---------------------------------------------------------------- internals
 
   private async context(
@@ -286,17 +323,7 @@ export class DefaultAllowanceService<X> implements DailyAllowanceService, Allowa
 
     let send = await this.repository.findSend(userId, category.categoryId, today);
     if (!send) {
-      // "To the end of yesterday" — today's own spend must not shrink today's target,
-      // otherwise a morning coffee would quietly lower the number it is measured against.
-      const spentBefore = await this.ledger.spendInPeriod(
-        userId,
-        period.id,
-        addLocalDays(today, -1),
-      );
-      const dailyTarget = computeDailyTarget({
-        remaining: period.capMinorUnits - spentBefore,
-        daysLeft,
-      });
+      const dailyTarget = await this.targetFor(userId, period, today);
       // A category with no reminder is `not_applicable`: its row exists so `/today` has a
       // stable figure, but it will never be delivered and must not enter the retry index.
       send = await this.repository.insertSend({
@@ -324,6 +351,21 @@ export class DefaultAllowanceService<X> implements DailyAllowanceService, Allowa
         daysLeft,
       },
     };
+  }
+
+  /**
+   * The formula, fed from the period's frozen cap and spend **to the end of yesterday**
+   * — today's own spend must not shrink today's target, otherwise a morning coffee
+   * would quietly lower the number it is measured against. The one place the inputs
+   * are assembled, so a first-of-the-day compute and a `capChanged` re-price cannot
+   * disagree about what goes in.
+   */
+  private async targetFor(userId: UserId, period: BudgetPeriod, today: LocalDate): Promise<MinorUnits> {
+    const spentBefore = await this.ledger.spendInPeriod(userId, period.id, addLocalDays(today, -1));
+    return computeDailyTarget({
+      remaining: period.capMinorUnits - spentBefore,
+      daysLeft: daysInclusive(today, period.periodEnd),
+    });
   }
 
   /** Drop any category that stopped being eligible while step 1 was running. */
