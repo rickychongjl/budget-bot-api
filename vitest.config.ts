@@ -6,7 +6,11 @@ import { defineConfig } from 'vitest/config';
  *   - unit        `test/unit/**`        — pure `core/domain` logic, no DB, no Worker.
  *   - integration `test/integration/**` — against a real Neon branch (constraints do real work).
  *   - eval        M6's versioned NLP set — added with M6.
- *   - e2e         one deployed-Worker webhook round trip — added with M7.
+ *   - e2e         deliberately manual. M7 4B's plan settled this: production is the
+ *                 only environment (master plan §5.7), so there is no staging Worker
+ *                 to point an automated round trip at. Stage 4E's checklist — a real
+ *                 `/internal/send-allowance` and a real `/start` against Ricky's own
+ *                 chat — is the e2e tier for this pass.
  *
  * `passWithNoTests` keeps CI green while the integration/eval suites are still empty.
  */

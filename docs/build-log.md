@@ -1449,3 +1449,127 @@ production-only (§5.7) there is no staging Worker to rehearse on.
    by the shared secret. That is the design in M7's handover, and the constant-time
    compare is implemented, but it is worth revisiting whether the route should also
    require an internal-origin check once there is a custom domain.
+
+## M7 stage 4B — Webhook spine, dedup & routing — 2026-09-11
+
+Phase 4's second stage, and the first time an inbound Telegram message reaches a
+reply. 4A gave the bot a voice; this gives it ears.
+
+Scope is the spine: the webhook, dedup, the update parser, the dispatcher, the command
+catalogue and rendering. The nine product commands are 4C and the free-text path into
+M6 is 4D; see `docs/M7-phase-4-plan.md`.
+
+### Built
+
+- **`channels/telegram/webhook-handler.ts`** — `X-Telegram-Bot-Api-Secret-Token`
+  compared in constant time **before the body is read**, then `claimUpdate`, then 200,
+  then `ctx.waitUntil`. Malformed JSON and unrecognisable updates are answered 200 as
+  well: anything else invites Telegram to retry them forever.
+- **`channels/telegram/update-parser.ts`** — raw `Update` JSON → a discriminated
+  `TelegramEvent`, via Zod. The private-chat check lives here, not in the dispatcher,
+  so no downstream branch can forget it. Nothing throws; an unrecognised update is
+  `unsupported`.
+- **`channels/telegram/dispatcher.ts`** — M11's routing order, one reply per branch.
+  A thrown `RefusalError`/`EntitlementRefusal` renders as its own copy; anything else
+  is one apology and one log line carrying only the update id.
+- **`channels/telegram/command-router.ts` + `commands/`** — the catalogue that is
+  simultaneously the router, `/help`'s source and (at 4E) `setMyCommands`' input, with
+  a tokeniser that handles `/budget "Eating Out" 300`. Ships `/help`, `/cancel`,
+  `/export` and the billing quartet.
+- **`channels/telegram/render.ts`** — plain text throughout, one line of copy per
+  `RefusalCode` behind a `satisfies Record<RefusalCode, string>`, onboarding keyboards
+  (≤4 options) or numbered lists (>4), and `paginate` at 4096.
+- **`channels/telegram/gateway-repository.ts` + `DrizzleGatewayRepository`** —
+  `claimUpdate`, `findPendingPrompt`, `setPendingPrompt`, `clearPendingPrompt`.
+- **`schema/platform.ts`** — `inbound_update` and `pending_prompt`, migration **0005**.
+- **`core/shared/text.ts`** — `sanitiseDisplayText`, the hoist M5's own entry deferred
+  to "when M7 lands and there are three copies"; M2 and M5 delegate to it under their
+  existing names, in a separate commit.
+- **`src/index.ts`** — `POST /telegram/webhook` delegating to the handler, and
+  `SUPPORT_CONTACT` on `Env`.
+
+### Assumed
+
+- **The daily message cap is waived until onboarding completes; fair use never is.**
+  Free admits 5 messages per user-local day and M8 counts a callback tap as an admitted
+  event, so `/start` plus the five onboarding answers is six: a new Free user was
+  refused `DAILY_MESSAGE_LIMIT` before finishing sign-up, and M7's own DoD ("walk
+  `/start` end-to-end in under 5 minutes") could never have passed. **Ricky's ruling,
+  11 Sep 2026.** Implemented as an additive M8 change rather than M7 skipping the gate:
+  `admitMessage` takes an optional `AdmitMessageOptions`, and `usage_counter` grows
+  `counts_toward_daily` (migration **0006**) so a waived message still fills the
+  rolling window but does not eat the day's quota once the account is live. This is a
+  deliberate deviation from M8's "`admitMessage` is the very first gate after user
+  resolution" — the gate still runs, it just enforces one limit instead of two.
+- **`/start` stays in 4C, so 4B's unresolved-user branch has nowhere to send people.**
+  A stranger gets `ONBOARDING_REQUIRED` ("Send /start first") and `/start` is not
+  registered until 4C, where the copy becomes true. Ricky's call, taken knowingly.
+- **Pre-registration senders are not rate-limited.** `usage_counter` is keyed on a
+  `user_id` that does not exist until `/start` creates it, so there is no key to limit
+  a stranger by. `inbound_update` still prevents a Telegram redelivery being answered
+  twice, but nothing caps a stream of distinct messages from an unregistered sender.
+  Closing it means registering on first contact, which is `/start`'s job — see open
+  question 1.
+- **`SUPPORT_CONTACT` is a Wrangler secret, not a `[vars]` entry.** The plan put
+  Ricky's Gmail in `wrangler.toml`; this repository is public. A secret keeps the
+  address out of the repo at no cost (a dashboard-set plain var would be wiped by the
+  next `wrangler deploy`; a secret survives). Ricky was fine with either.
+- **An edited message is treated as a fresh message.** M11 has no edit semantics, and
+  silently ignoring an edit leaves the user's correction unanswered.
+- **A callback query with no `data` is `unsupported`** — it is not a button we built.
+- **Unrouted callback prefixes (`pc:`, `map:`, `cat:`, `hist:`) answer `STALE_ACTION`**
+  until 4C/4D register them. A press that does nothing is worse than one that says so.
+- **The reply's `ChannelConnection` is built from the update itself**, not read back
+  from M2: this is a reply to a message that just arrived, so a lookup could only
+  return the same `chat_id`. Every `MessageSender` reads `chatId` and nothing else.
+
+### Fixed in passing
+
+- **`sanitiseDisplayText` now strips bidi controls.** Both original copies stripped
+  `\p{Cc}` only, and the bidi overrides (U+202A–U+202E, U+2066–U+2069, U+200E/F) are
+  `\p{Cf}` — so a category name containing U+202E could render the rest of the line
+  right-to-left in the user's chat and make a message appear to say something it does
+  not. Caught by `render.test.ts`. Listed explicitly rather than stripping all of
+  `\p{Cf}`, which would take the zero-width joiner and break emoji in category names.
+  The fix reaches M2 and M5 through the hoist.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors; the `RefusalCode` render table is enforced here.
+
+`npm test` — **552 passed / 9 skipped** across 38 files, up from 440: 96 new tests in
+eight suites (`test/unit/telegram/{dispatcher,webhook-handler,webhook-route,update-parser,command-router,render}.test.ts`,
+`test/unit/entitlements/onboarding-waiver.test.ts`, `test/integration/gateway.test.ts`)
+plus `test/support/in-memory-gateway-repository.ts` and `test/unit/telegram/harness.ts`.
+The 9 skipped are the Neon-gated integration suites, skipped here because a fresh
+worktree has no `.env`. **No existing test was changed** — M2's and M5's suites are the
+regression guard for the strip-function hoist, and they pass untouched.
+
+`npm run db:generate` — 0005 (`inbound_update`, `pending_prompt`) and 0006
+(`usage_counter.counts_toward_daily`) generated separately so M7's tables and the M8
+column stay legible in history. Both inspected and committed with their snapshots.
+
+`npm run test:integration` — **71 passed / 1 failed** against the real Neon branch. The
+single failure is `entitlements.test.ts`: `column usage_counter.counts_toward_daily
+does not exist`. **The branch has not had 0006 applied** — `npm run db:migrate` is a
+deliberate step (plan stage 4E.4) and was not run from here. Everything else, including
+all five other integration suites, passes.
+
+**Nothing here has been deployed or seen a real Telegram message.** The webhook is
+proven against hand-built `Request`s and a fake `ExecutionContext`; `setWebhook` is
+stage 4E.
+
+### Open questions
+
+1. **Should the bot register a user on first contact?** It would close the
+   pre-registration rate-limit gap (above) and make "any message starts onboarding"
+   true rather than aspirational — but it creates an `app_user` row for anyone who
+   messages the bot, and it is `/start`'s job. Decide it in 4C, when `/start` lands.
+2. **`counts_toward_daily` has no backfill concern but does have a retention one.**
+   Every waived onboarding row lives in `usage_counter` forever, same as any other.
+   M9's retention pass should treat them identically; nothing here depends on them
+   after the day they were written.
+3. **The dispatcher's `freeText` port is unimplemented**, so an onboarded user's free
+   text and any open `pending_prompt` answer both get an honest "not yet" reply.
+   `pending_prompt` is therefore written by nothing until 4D — the table, its
+   repository and `/cancel` are all in place and tested ahead of the writer.

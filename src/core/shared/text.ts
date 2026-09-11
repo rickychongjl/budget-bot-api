@@ -30,11 +30,24 @@ export const MAX_DISPLAY_TEXT = 40;
 export function sanitiseDisplayText(value: string, maxLength: number = MAX_DISPLAY_TEXT): string {
   return (
     value
-      // Control characters, including the bidi and newline tricks that let a crafted
-      // name rearrange the rest of the sentence.
+      // C0/C1 control characters — newlines included, so a name cannot forge a second
+      // line of the bot's own message.
       .replace(/[\p{Cc}]/gu, '')
+      .replace(BIDI_CONTROLS, '')
       // Markdown and HTML markup, in every parse mode Telegram offers.
       .replace(/[*_`[\]<>]/g, '')
       .slice(0, maxLength)
   );
 }
+
+/**
+ * Bidirectional overrides and isolates. These are `\p{Cf}` (format), **not** `\p{Cc}`,
+ * so the original copies of this function let them through: a category name containing
+ * U+202E renders the rest of the line right-to-left in the user's chat, which can make
+ * a message appear to say something it does not.
+ *
+ * Listed explicitly rather than stripping all of `\p{Cf}`, because that class also
+ * holds the zero-width joiner — and removing that would break a perfectly ordinary
+ * emoji in a category name.
+ */
+const BIDI_CONTROLS = /[‎‏‪-‮⁦-⁩]/g;
