@@ -19,7 +19,7 @@ import type {
   PageRequest,
   Transaction,
 } from '../../../src/core/ledger';
-import type { ReminderSelectionService } from '../../../src/core/ports';
+import type { ReminderSelectionService } from '../../../src/core/allowance';
 import type { CurrencyCode, Id, LocalDate, MinorUnits, Tier, UserId } from '../../../src/core/shared/common';
 
 /**

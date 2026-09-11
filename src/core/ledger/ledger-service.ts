@@ -92,5 +92,13 @@ export interface LedgerService {
 
   /** Returns `expenses - refunds`, excluding `income` by construction. */
   spendInPeriod(userId: UserId, budgetPeriodId: Id, upTo?: LocalDate): Promise<MinorUnits>;
-  spentOn(userId: UserId, localDate: LocalDate): Promise<MinorUnits>;
+  /**
+   * `expenses - refunds` on one user-local date, optionally narrowed to a single
+   * category. The `categoryId` argument was added for M5 (Phase 3): `AllowanceView`
+   * is per category, so `available_today` needs a per-category figure rather than the
+   * user-wide one. Additive — existing callers are unaffected — and it keeps every
+   * ledger read behind this module's `status = 'confirmed'` filter instead of M5
+   * re-implementing it against `transaction`.
+   */
+  spentOn(userId: UserId, localDate: LocalDate, categoryId?: Id): Promise<MinorUnits>;
 }

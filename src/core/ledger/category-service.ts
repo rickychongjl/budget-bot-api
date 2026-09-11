@@ -7,8 +7,8 @@ import type { Id, Instant, UserId } from '../shared/common';
  * pen, because `LedgerService` — the only M3 port M1 committed — has no category
  * methods at all and M2's onboarding step 4 needed *some* M3 contract to create "Food"
  * through rather than writing M3's table. M3 has now claimed it, so it lives with its
- * owning module (CLAUDE.md, "Ports and interfaces") and `core/ports/` is down to M5's
- * `ReminderSelectionService`.
+ * owning module (CLAUDE.md, "Ports and interfaces"). M5 has since claimed the last
+ * resident, `ReminderSelectionService`, so `core/ports/` is gone entirely.
  *
  * Changes M3 made on adopting it: `reactivate` (M8 already gates a
  * `reactivate_category` action, and reviving an archived name has to go through

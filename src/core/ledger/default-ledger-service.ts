@@ -227,8 +227,8 @@ export class DefaultLedgerService<X> implements LedgerService {
     return this.repository.sumInPeriod(userId, budgetPeriodId, upTo ?? null);
   }
 
-  spentOn(userId: UserId, localDate: LocalDate): Promise<MinorUnits> {
-    return this.repository.sumOnLocalDate(userId, localDate);
+  spentOn(userId: UserId, localDate: LocalDate, categoryId?: Id): Promise<MinorUnits> {
+    return this.repository.sumOnLocalDate(userId, localDate, categoryId);
   }
 
   // ---- helpers -------------------------------------------------------------------
