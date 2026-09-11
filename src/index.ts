@@ -222,6 +222,12 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
       identity,
       entitlements,
       onboarding,
+      // Stage 4C's nine product commands call these; the dispatcher itself does not.
+      categories,
+      budgets,
+      ledger,
+      allowance,
+      reminders,
       gateway: gatewayRepository,
       router: createCatalogue(),
       sender,
