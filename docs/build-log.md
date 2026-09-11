@@ -1549,11 +1549,10 @@ regression guard for the strip-function hoist, and they pass untouched.
 (`usage_counter.counts_toward_daily`) generated separately so M7's tables and the M8
 column stay legible in history. Both inspected and committed with their snapshots.
 
-`npm run test:integration` — **71 passed / 1 failed** against the real Neon branch. The
-single failure is `entitlements.test.ts`: `column usage_counter.counts_toward_daily
-does not exist`. **The branch has not had 0006 applied** — `npm run db:migrate` is a
-deliberate step (plan stage 4E.4) and was not run from here. Everything else, including
-all five other integration suites, passes.
+`npm run test:integration` — **72 passed / 0 failed** against the real Neon branch,
+across all six integration files. 0005 and 0006 were applied to the branch by Ricky
+(`npm run db:migrate`) after the first run of this suite reported the expected
+`column usage_counter.counts_toward_daily does not exist`; re-run clean afterwards.
 
 **Nothing here has been deployed or seen a real Telegram message.** The webhook is
 proven against hand-built `Request`s and a fake `ExecutionContext`; `setWebhook` is
