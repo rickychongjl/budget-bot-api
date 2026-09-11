@@ -1572,3 +1572,156 @@ stage 4E.
    text and any open `pending_prompt` answer both get an honest "not yet" reply.
    `pending_prompt` is therefore written by nothing until 4D — the table, its
    repository and `/cancel` are all in place and tested ahead of the writer.
+
+## M7 stage 4C — The command catalogue — 2026-09-11
+
+Phase 4's third stage, and the first time the bot can do the product's job. 4A gave it
+a voice, 4B gave it ears; this gives it something to say back.
+
+The nine product commands — `/start`, `/today`, `/budget`, `/stats`, `/history`,
+`/delete`, `/categories`, `/remind`, `/settings` — one file each under
+`channels/telegram/commands/`, each calling the owning core service and rendering what
+comes back. The catalogue is now all sixteen commands Ricky approved. Free text into M6
+is 4D; go-live is 4E.
+
+### Built
+
+- **`commands/start.ts`** — `identity.register` → `onboarding.start`. The only handler
+  that creates anything, and the only one with `requiresAccount: false` that does.
+  `register` runs unconditionally rather than only for an unknown sender: it is
+  idempotent by contract, and it is also the only thing that re-activates a
+  `channel_connection` the 403 path switched off. Someone who blocked the bot and
+  changed their mind types `/start`, and that line is why it works.
+- **`commands/today.ts`** — `allowance.availableToday`, rendered with M5's own
+  `renderAllowanceLine`, so `/today` and the 07:00 reminder cannot word the same figure
+  differently.
+- **`commands/budget.ts`** — `currentBudgets` / `setCap`. The amount converts through
+  M3's `toMinorUnits` **before** any write, which is what makes M11's "no partial write
+  on bad input" true rather than aspirational.
+- **`commands/stats.ts`** — `currentBudgets` + `ensurePeriod` + `spendInPeriod`.
+- **`commands/history.ts`** — the paginated read, forward-only, plus `historyPage`,
+  which both the command and the `hist:` callback go through so a continued page cannot
+  render differently from the page it continues.
+- **`commands/delete.ts`** — `deleteLast`, then `availableToday` **directly**.
+  `AllowanceNotifier.ledgerChanged` is a documented no-op, because `available_today` is
+  derived rather than stored; a handler relying on it would print the pre-delete number.
+- **`commands/categories.ts`**, **`commands/remind.ts`**, **`commands/settings.ts`** —
+  argument-driven; see the decisions below.
+- **`commands/context.ts`** — the three lookups nearly every handler starts with. The
+  name-to-category one goes through M3's `findByName`, which owns normalisation; M7
+  never lowercases or trims a category name itself, or `/budget food` would stop finding
+  "Food" the moment M3's rule changed.
+- **`render.ts`** — `renderSettings`, `renderCategoryList`, `renderBudgetList`,
+  `renderStats`, `renderHistoryPage`, `historyCallbackData`/`parseHistoryCallbackData`,
+  `formatShortDate`. Plain text throughout, as bot-wide.
+- **The command seam widened** — `CommandServices` now carries every core contract a
+  handler may call and nothing else; `CommandContext` gained `sender` because `/start`
+  has to register someone and `register` needs an `externalId` and `chatId` that a
+  `userId` cannot supply. A handler needing something off that list is the signal the
+  behaviour belongs in a core module.
+- **`test/support/domain-services.ts`** — M3/M4/M5 wired for real over one in-memory
+  store, the way the composition root wires them. M5's own sender is kept separate from
+  the dispatcher's, so a test asserting "the bot replied once" never counts a scheduled
+  reminder.
+
+### Decisions taken (Ricky, 11 Sep)
+
+- **`/categories` and `/remind` take arguments, not inline keyboards.** The stage plan
+  sketched `cat:<action>:<id>` buttons. A keyboard rename needs the new name typed back,
+  and the only place M7 can hold "I am waiting for a name" is `pending_prompt`, whose
+  `kind` is `'confirm' | 'clarify'` — a third kind means another migration inside a
+  stage that already adds nine handlers. Quoting a multi-word name is M11's shared
+  contract anyway, and the tokeniser already does it. Consequence: **`hist:` is the only
+  callback prefix 4C introduces.**
+- **`/settings` is view-only this pass.** M2 already makes timezone immutable, refuses a
+  currency change once the account has any transaction, and fixes the reminder at 07:00,
+  leaving the budget anchor date as the only genuinely editable field. Shipping the read
+  and deferring the write beat building an edit path for one field. Enforced by the
+  compiler, not by memory: `CommandServices.identity` is `Pick<IdentityService,
+  'getSettings' | 'register'>`, so a handler that tried to write would not compile.
+  Propagated to `docs/M11-telegram-commands-contracts.md` and
+  `docs/M2-identity-accounts.md`.
+- **`/history` pages forward only.** `Page<T>` is `{ items, nextCursor }` — no backward
+  cursor. A "previous" button would mean changing M3's public contract *and* its Drizzle
+  repository from inside an M7 stage, which is the mixing CLAUDE.md warns against.
+- **Registration stays `/start`-only** — closing 4B's open question 1. A stranger's
+  non-`/start` message keeps getting `ONBOARDING_REQUIRED`. The pre-registration
+  rate-limit gap 4B logged stays open knowingly: closing it means an `app_user` row for
+  every wrong number and spam bot that ever messages the bot.
+
+### Assumed
+
+- **`/stats` materialises a period row on a read path.** `spendInPeriod` needs a
+  `budget_period_id` and `currentBudgets` returns a `Period` without one, so the id has
+  to come from `ensurePeriod` — an upsert. This is the existing house pattern rather
+  than a new liberty: M5's `availableToday` calls `ensurePeriod` too, so `/today` has
+  always done it. M4 deliberately has no cron opening periods in advance, so
+  materialising on first read is how a period row comes to exist at all. The upsert is
+  race-safe on `(budget_id, period_key)`, and a cycle with nothing logged still reads as
+  "cap applies, nothing spent" — never an error.
+- **`/history`'s page size is 10, and the More button is dropped rather than truncated**
+  when a cursor would exceed Telegram's 64-byte `callback_data` cap. A page with no
+  button is recoverable; a 400 from the Bot API is a reply the user never sees.
+- **An archived category still names its old transactions.** `/history` lists with
+  `includeArchived: true` — a row rendering as "uncategorised" purely because the
+  category was later archived would be a lie about the user's own history.
+- **`/settings` ignores arguments rather than refusing them.** `/settings currency USD`
+  simply shows the settings. Refusing would imply the syntax nearly works.
+- **A budget start date mistyped during onboarding cannot be corrected** without
+  deleting the account. Direct consequence of the view-only ruling, recorded so it is
+  not rediscovered as a bug. First thing to revisit when settings editing returns.
+
+### Fixed in passing
+
+- **Removed a branch in `renderBudgetList` that could never run.** M4's page says
+  `/budget` should show both the current-cycle snapshot and the standing cap after a
+  mid-cycle change ("only differs from the standing rule right after a mid-period
+  change, in which case show both"). That case cannot occur: M4's own `setCap` updates
+  the standing budget **and** the materialised snapshot for the current cycle in the
+  same call (`default-budget-service.ts:168-174`), precisely so the user's "my budget is
+  300 now" means now. The two cannot diverge, so the second figure was dead code
+  pretending to be a feature. Caught by `commands/budget.test.ts`, which now asserts the
+  sync instead. **M4's page is stale on this point, not the implementation.**
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors.
+
+`npm test` — **632 passed / 0 skipped** across 47 files with `DATABASE_URL` set, and
+**623 passed / 9 skipped** without it (the 9 are the Neon-gated integration suites).
+Up from 552: 68 new tests in nine suites (`test/unit/telegram/commands/*.test.ts`) plus
+the 4C views appended to `render.test.ts`, and `test/support/domain-services.ts`.
+
+Three 4B assertions were updated, each because 4C's landing is the thing they described
+as pending: the catalogue now finds `/today`, `/start` joined the no-account set, and a
+`hist:` press now reaches M3 — which rejects a bogus cursor in its own words rather than
+as a generic stale button. No other existing test changed.
+
+`npm run test:integration` — **72 passed / 0 failed** against the real Neon branch,
+across all six integration files. 4C adds no schema and touches no repository, so this
+is a regression check rather than new coverage.
+
+`npm run db:generate` — **not run, and correctly so.** Stage 4C adds no schema. Needing
+a migration here would have been a signal the design had drifted.
+
+Commands are tested through the dispatcher rather than by calling `handle` directly: a
+handler in isolation proves nothing about the two things most likely to break it — that
+the router reaches it with the tokens it expects, and that a refusal it throws is
+rendered rather than escaping as an apology. The figures in those tests are real —
+`/today` asserts `$25` because `$600` over the 24 days left in the 5 Sep – 4 Oct cycle
+is `$25`, computed by M5 from a materialised period and a real ledger sum, not a fake.
+
+**Nothing here has been deployed or seen a real Telegram message.** `setWebhook` is
+stage 4E, and production is the only environment (master plan §5.7).
+
+### Open questions
+
+1. **The Notion M11 and M2 pages still describe `/settings` as editable.** The local
+   docs are updated; mirroring them to Notion is Ricky's to approve, since those pages
+   are the shared source of truth and the wording there should be his.
+2. **Nothing corrects a mistyped budget anchor date.** See the accepted cost above.
+   Options when it comes back into scope: a narrow `/settings startdate`, or folding it
+   into a broader settings-editing pass. Not urgent until someone actually mistypes it.
+3. **`/history`'s page size (10) has never been seen on a real phone.** It is a guess
+   that reads well in a test. Worth a look during 4E's manual walkthrough, when there is
+   a real chat window to judge it in.

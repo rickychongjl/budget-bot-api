@@ -119,26 +119,40 @@ Every branch ends in exactly one `send`; `skipped` → `identity.deactivateConne
 
 ---
 
-## Stage 4C — Command catalogue
+## Stage 4C — Command catalogue — **shipped 11 Sep 2026**
 
 Each handler in `channels/telegram/commands/<name>.ts`, calling the owning service, rendering, returning one `OutboundMessage`. No arithmetic, no policy.
 
 | Command | Calls | Notes |
 |---|---|---|
-| `/start` | `onboarding.start(userId)` | Returning user gets `summary` kind; render `AccountSummary` |
+| `/start` | `identity.register` → `onboarding.start(userId)` | Returning user gets `summary` kind; render `AccountSummary`. `register` runs unconditionally — idempotent by contract, and the only thing that re-activates a connection the 403 path deactivated |
 | `/today [category]` | `allowance.availableToday(userId, categoryId?)` | M5's `renderAllowanceLine` per view; counts toward quota (already does — admission runs first) |
 | `/budget [category] [amount]` | `budgets.currentBudgets` / `budgets.setCap` | Amount → minor units via M3's `toMinorUnits` against `settings.currencyCode`; no partial write on bad input |
-| `/categories` | `categories.list/create/rename/archive` | Sub-actions via inline keyboard `cat:<action>:<id>`; archive refusal message from M3 |
-| `/settings` | `identity.getSettings/updateSettings` | Timezone displayed, never editable — `TIMEZONE_IMMUTABLE` on attempt |
-| `/stats [category]` | `budgets.currentBudgets` + `ledger.spendInPeriod` | Plain text, paginated |
+| `/categories` | `categories.list/create/rename/archive` | **Arguments, not a keyboard** (see decision 1 below): `add` / `rename` / `archive`. Capacity and archive refusals come from M8 and M3 as thrown refusals |
+| `/settings` | `identity.getSettings` | **View only** (see decision 2 below). `updateSettings` is not on `CommandServices.identity`, so a write does not compile |
+| `/stats [category]` | `budgets.currentBudgets` + `budgets.ensurePeriod` + `ledger.spendInPeriod` | Plain text, paginated. `ensurePeriod` on a read path is the house pattern, not a new liberty — M5's `availableToday` already does it |
 | `/delete` | `ledger.deleteLast` → `allowance.availableToday` | `null` → `NO_TRANSACTIONS`; confirmation includes updated allowance line — **call `availableToday` directly, `ledgerChanged` is a no-op** |
-| `/remind [category]` | `reminders.enabledCategoryIds/enable/disable` | Offer only categories with an active budget (`budgets.activeBudgets`) so M5's `NO_BUDGET` never surfaces after the fact |
+| `/remind [category]` | `reminders.enabledCategoryIds/enable/disable` | Offer only categories with an active budget (`budgets.activeBudgets`) so M5's `NO_BUDGET` never surfaces after the fact. `/remind <name>` toggles |
 | `/help [command]` | the router's own table | Tier labels per M11; admission-exempt |
-| `/history` | `ledger.history(userId, {cursor, limit})` | Paginated read, `hist:<cursor>` next/prev keyboard, 4096 pagination; no Edit buttons (deferred) |
+| `/history` | `ledger.history(userId, {cursor, limit})` | Paginated read, **forward only** (see decision 3 below): one `More` button carrying `hist:<cursor>`. No Edit buttons (deferred) |
 
 Refusals: one `catch` in the dispatcher maps `RefusalError` (`core/shared/errors.ts`) and `EntitlementRefusal` → `renderRefusal`. Every one of the 17 `RefusalCode`s gets a line in `render.ts`; unknown thrown errors → apology.
 
-Category lookup by name for `/today`, `/budget`, `/stats`, `/remind` → `categories.findByName` (M3 owns normalisation via `normalizeCategoryName`).
+Category lookup by name for `/today`, `/budget`, `/stats`, `/remind`, `/categories` → `categories.findByName` (M3 owns normalisation via `normalizeCategoryName`).
+
+### Decisions taken during the build — Ricky, 11 Sep 2026
+
+1. **`/categories` and `/remind` take arguments, not inline keyboards.** This plan originally sketched `cat:<action>:<id>` buttons. A keyboard rename needs the new name typed back, and the only place M7 can hold "I am waiting for a name" is `pending_prompt`, whose `kind` is `'confirm' | 'clarify'` — a third kind means another migration inside a stage that already adds nine handlers. Quoting a multi-word name is M11's shared contract anyway, and the tokeniser already does it. `hist:` is therefore the only callback prefix 4C introduces.
+
+2. **`/settings` is view-only this pass.** M2 already makes timezone immutable, refuses a currency change once the account has any transaction, and pins the reminder time at 07:00 with no customisation — which left the budget anchor date as the only genuinely editable field. Ricky's call was to ship the read and defer the write rather than build an edit path for one field. **Accepted cost, recorded so it is not rediscovered as a bug: a budget start date mistyped during onboarding cannot be corrected without deleting the account.** Enforced by the compiler rather than by memory — `CommandServices.identity` is `Pick<IdentityService, 'getSettings' | 'register'>`, so no handler can reach `updateSettings`. Propagated to `docs/M11-…md` and `docs/M2-identity-accounts.md`.
+
+3. **`/history` pages forward only.** `Page<T>` is `{ items, nextCursor }` — there is no backward cursor, so a "previous" button would mean changing M3's public contract *and* its Drizzle repository from inside an M7 stage, which is exactly the mixing CLAUDE.md warns against. A chat transcript pages downward anyway.
+
+4. **Registration stays `/start`-only**, closing stage 4B's open question 1. A stranger's non-`/start` message keeps getting `ONBOARDING_REQUIRED`. The pre-registration rate-limit gap 4B logged stays open knowingly: closing it means an `app_user` row for every wrong number and spam bot that ever messages the bot.
+
+### One thing the build found
+
+`renderBudgetList` originally rendered both the current-cycle snapshot and the standing cap after a mid-cycle change, because M4's page says to ("only differs from the standing rule right after a mid-period change, in which case show both"). **That case cannot occur.** M4's own `setCap` updates the standing budget *and* the materialised snapshot for the current cycle in one call (`default-budget-service.ts:168-174`), precisely so the user's "my budget is 300 now" means now. The branch was dead code pretending to be a feature and was removed; the test that caught it now asserts the sync instead. M4's page is stale on this point, not the implementation.
 
 ---
 
