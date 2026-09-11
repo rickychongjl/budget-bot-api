@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   date,
   index,
@@ -79,6 +80,10 @@ export const entitlement = pgTable(
  *     time from the user's immutable IANA timezone — index
  *     `usage_counter_daily (user_id, local_date)` serves the Free daily cap.
  *
+ *   - `counts_toward_daily` separates the two limits this table serves. Every admitted
+ *     row counts toward fair use; only rows written after onboarding finished count
+ *     toward the Free daily cap (index `usage_counter_daily` still serves both).
+ *
  * Deliberately not the original entries/llm_calls metrics shape: M9 owns metrics;
  * this table holds only the counters that gate behaviour.
  */
@@ -91,6 +96,14 @@ export const usageCounter = pgTable(
     messageId: text('message_id').notNull(),
     admittedAt: timestamp('admitted_at', { withTimezone: true, mode: 'date' }).notNull(),
     localDate: date('local_date', { mode: 'string' }).notNull(),
+    /**
+     * False for a message admitted while the user was still onboarding. The row still
+     * exists — fair use counts it, because that limit is abuse protection and is never
+     * waived — but the Free daily cap skips it. Added by M7 stage 4B; see the
+     * `admitMessage` options argument in `core/entitlements/entitlement-service.ts`
+     * for why the two limits had to be separable.
+     */
+    countsTowardDaily: boolean('counts_toward_daily').notNull().default(true),
   },
   (t) => [
     primaryKey({ name: 'usage_counter_pkey', columns: [t.userId, t.messageId] }),

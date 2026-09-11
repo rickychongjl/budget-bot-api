@@ -108,6 +108,18 @@ export class TelegramApiClient {
       ...(replyMarkup === undefined ? {} : { reply_markup: replyMarkup }),
     });
   }
+
+  /**
+   * Stops the spinner on a tapped inline button. Telegram expects this within a few
+   * seconds of every callback query, whether or not the press led anywhere, so the
+   * dispatcher calls it before it decides what the press meant.
+   *
+   * No `text`: the answer itself arrives as a normal message, which keeps one reply
+   * per input step (M11) instead of splitting it between a toast and a message.
+   */
+  answerCallbackQuery(callbackQueryId: string): Promise<TelegramCallOutcome> {
+    return this.call('answerCallbackQuery', { callback_query_id: callbackQueryId });
+  }
 }
 
 /** A failing response may carry an envelope, HTML, or nothing. Never let that throw. */

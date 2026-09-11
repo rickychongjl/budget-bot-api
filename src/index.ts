@@ -1,6 +1,10 @@
 import { Hono } from 'hono';
+import { createCatalogue } from './channels/telegram/commands/catalogue';
+import { TelegramDispatcher } from './channels/telegram/dispatcher';
+import type { GatewayRepository } from './channels/telegram/gateway-repository';
 import { TelegramApiClient } from './channels/telegram/telegram-api-client';
 import { TelegramMessageSender } from './channels/telegram/telegram-message-sender';
+import { TelegramWebhookHandler } from './channels/telegram/webhook-handler';
 import { DefaultAllowanceService } from './core/allowance/default-allowance-service';
 import { DefaultReminderSelectionService } from './core/allowance/default-reminder-selection-service';
 import { createReminderCapacityReader } from './core/allowance/index';
@@ -20,6 +24,7 @@ import { DrizzleAllowanceRepository } from './infrastructure/database/repositori
 import { DrizzleBudgetRepository } from './infrastructure/database/repositories/drizzle-budget-repository';
 import { DrizzleEntitlementRepository } from './infrastructure/database/repositories/drizzle-entitlement-repository';
 import { DrizzleIdentityRepository } from './infrastructure/database/repositories/drizzle-identity-repository';
+import { DrizzleGatewayRepository } from './infrastructure/database/repositories/drizzle-gateway-repository';
 import { DrizzleLedgerRepository } from './infrastructure/database/repositories/drizzle-ledger-repository';
 import type { DatabaseExecutor } from './infrastructure/database/repositories/drizzle-ledger-repository';
 import { ConsoleLogger } from './observability/log';
@@ -50,6 +55,12 @@ export interface Env {
 
   // Wrangler secrets (`wrangler secret put <NAME>`), never in `wrangler.toml`:
   TELEGRAM_BOT_TOKEN: string;
+  /**
+   * Where `/paysupport` sends someone with a payment problem. A secret rather than a
+   * `[vars]` entry only because the value is a personal address and this repository is
+   * public — it is shown to users, so it is not sensitive in the usual sense.
+   */
+  SUPPORT_CONTACT: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   INTERNAL_DISPATCH_SECRET: string;
   OPENAI_API_KEY: string;
@@ -71,6 +82,10 @@ export interface Services {
   allowance: DefaultAllowanceService<DatabaseExecutor>;
   reminders: DefaultReminderSelectionService<DatabaseExecutor>;
   sender: MessageSender;
+  /** M7's own tables — `inbound_update` dedupe and `pending_prompt`. */
+  gateway: GatewayRepository;
+  /** The webhook, fully wired. `index.ts` only hands it the raw request. */
+  telegramWebhook: TelegramWebhookHandler;
 }
 
 export interface CreateServicesOptions {
@@ -104,6 +119,7 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
   const budgetRepository = new DrizzleBudgetRepository(db);
   const allowanceRepository = new DrizzleAllowanceRepository(db);
   const entitlementRepository = new DrizzleEntitlementRepository(db);
+  const gatewayRepository = new DrizzleGatewayRepository(db);
 
   const telegramApi = new TelegramApiClient({
     token: env.TELEGRAM_BOT_TOKEN,
@@ -199,6 +215,33 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
     clock,
   });
 
+  // --- M7's inbound half (stage 4B) ----------------------------------------------
+  // Built last: the dispatcher is the one thing that needs every other service.
+  const telegramWebhook = new TelegramWebhookHandler({
+    dispatcher: new TelegramDispatcher({
+      identity,
+      entitlements,
+      onboarding,
+      gateway: gatewayRepository,
+      router: createCatalogue(),
+      sender,
+      callbacks: {
+        answerCallbackQuery: async (callbackQueryId) => {
+          await telegramApi.answerCallbackQuery(callbackQueryId);
+        },
+      },
+      clock,
+      logger,
+      supportContact: env.SUPPORT_CONTACT,
+      // `freeText` arrives in stage 4D with the parsing pipeline; until then the
+      // dispatcher answers those two branches with an honest "not yet".
+    }),
+    gateway: gatewayRepository,
+    clock,
+    logger,
+    webhookSecret: env.TELEGRAM_WEBHOOK_SECRET,
+  });
+
   return {
     identity,
     onboarding,
@@ -209,6 +252,8 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
     allowance,
     reminders,
     sender,
+    gateway: gatewayRepository,
+    telegramWebhook,
   };
 }
 
@@ -222,6 +267,15 @@ export function createApp(makeServices: ServicesFactory = createServices): Hono<
 
   /** Liveness probe. Touches nothing — it must answer while Postgres is down. */
   routes.get('/health', (c) => c.json({ status: 'ok', service: 'budge-bot-api' }));
+
+  /**
+   * The Telegram webhook. Everything about it — the secret-token check, dedupe,
+   * returning 200 before the work happens — lives in the handler; this route exists
+   * only to hand over the raw request and the execution context.
+   */
+  routes.post('/telegram/webhook', async (c) => {
+    return makeServices(c.env).telegramWebhook.handle(c.req.raw, c.executionCtx);
+  });
 
   /**
    * One user's bundled 07:00 reminder (M7's handover item 3). Never routed publicly:

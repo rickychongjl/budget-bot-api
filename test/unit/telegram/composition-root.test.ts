@@ -24,6 +24,7 @@ const ENV: Env = {
   INTERNAL_DISPATCH_SECRET: SECRET,
   OPENAI_API_KEY: 'sk-test',
   DATABASE_URL: 'postgres://unused',
+  SUPPORT_CONTACT: 'support@example.test',
 };
 
 const SENT: SendOutcome = { status: 'sent', categoryCount: 2 };

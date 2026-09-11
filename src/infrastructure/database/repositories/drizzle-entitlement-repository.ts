@@ -71,7 +71,14 @@ function reads(x: DatabaseExecutor): EntitlementReads {
       const [row] = await x
         .select({ count: count() })
         .from(usageCounter)
-        .where(and(eq(usageCounter.userId, userId), eq(usageCounter.localDate, localDate)));
+        .where(
+          and(
+            eq(usageCounter.userId, userId),
+            eq(usageCounter.localDate, localDate),
+            // Onboarding-exempt rows fill the fair-use window but not the day's quota.
+            eq(usageCounter.countsTowardDaily, true),
+          ),
+        );
       return row?.count ?? 0;
     },
   };
@@ -126,6 +133,7 @@ export class DrizzleEntitlementRepository implements EntitlementRepository<Datab
               messageId: row.messageId,
               admittedAt: new Date(row.admittedAt),
               localDate: row.localDate,
+              countsTowardDaily: row.countsTowardDaily,
             })
             .onConflictDoNothing();
         },
