@@ -9,17 +9,65 @@
  *   telegram-api-client.ts      TelegramApiClient — the only caller of the Bot API
  *   telegram-message-sender.ts  TelegramMessageSender — the `MessageSender` M5 calls
  *
- * Still to land: the webhook handler, update parser, dispatcher and command router
- * (stages 4B–4D). Webhook flow, once built: verify
- * `X-Telegram-Bot-Api-Secret-Token` -> dedup insert -> return 200 fast ->
- * `ctx.waitUntil` background (resolve user -> M8 admit -> route per M11's routing
- * order -> reply). Command catalogue lives in M11.
+ * Landed in stage 4B (the inbound spine):
+ *   webhook-handler.ts   secret-token check -> dedupe -> 200 -> `ctx.waitUntil`
+ *   update-parser.ts     raw Telegram JSON -> `TelegramEvent`, private chats only
+ *   dispatcher.ts        M11's routing order; every branch ends in one reply
+ *   command-router.ts    the catalogue that also feeds `/help` and `setMyCommands`
+ *   commands/            `/help`, `/cancel`, `/export`, and the billing quartet
+ *   render.ts            plain-text rendering, refusal copy, keyboards, pagination
+ *   gateway-repository.ts  the port; `DrizzleGatewayRepository` implements it
+ *
+ * Still to land: the nine product commands (4C) and the free-text path into M6 (4D).
+ * The dispatcher's `freeText` dependency is the seam 4D fills; routing does not change.
  *
  * Wiring (composition root, `src/index.ts`):
  *   const telegramApi = new TelegramApiClient({ token: env.TELEGRAM_BOT_TOKEN, logger });
  *   const sender = new TelegramMessageSender(telegramApi);
+ *   const webhook = new TelegramWebhookHandler({ dispatcher, gateway, clock, logger, webhookSecret });
  */
 export { TelegramApiClient } from './telegram-api-client';
 export type { TelegramApiClientOptions, TelegramCallOutcome } from './telegram-api-client';
 
 export { TelegramMessageSender, classify } from './telegram-message-sender';
+
+export { TelegramWebhookHandler } from './webhook-handler';
+export type { BackgroundWork, WebhookHandlerDeps } from './webhook-handler';
+
+export { TelegramDispatcher } from './dispatcher';
+export type {
+  CallbackAcknowledger,
+  DispatcherDeps,
+  FreeTextHandler,
+  IdentityCollaborator,
+} from './dispatcher';
+
+export { CommandRouter, parseCommand } from './command-router';
+export type {
+  CommandContext,
+  CommandHandler,
+  CommandServices,
+  ParsedCommand,
+} from './command-router';
+
+export { createCatalogue, UNKNOWN_COMMAND } from './commands/catalogue';
+
+export { parseUpdate } from './update-parser';
+export type { TelegramEvent, TelegramSender } from './update-parser';
+
+export type {
+  GatewayRepository,
+  PendingPrompt,
+  PendingPromptKind,
+  SetPendingPromptInput,
+} from './gateway-repository';
+
+export {
+  MAX_INLINE_OPTIONS,
+  TELEGRAM_MAX_MESSAGE,
+  paginate,
+  refusalText,
+  renderAccountSummary,
+  renderOnboardingReply,
+  renderRefusal,
+} from './render';
