@@ -73,7 +73,8 @@ export class InMemoryEntitlementRepository<X = undefined> implements Entitlement
   async countUsageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number> {
     let count = 0;
     for (const row of this.usage.get(userId)?.values() ?? []) {
-      if (row.localDate === localDate) count += 1;
+      // Mirrors the partial count in Drizzle: onboarding-exempt rows are invisible here.
+      if (row.localDate === localDate && row.countsTowardDaily) count += 1;
     }
     return count;
   }

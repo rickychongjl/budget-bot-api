@@ -1,0 +1,1 @@
+ALTER TABLE "usage_counter" ADD COLUMN "counts_toward_daily" boolean DEFAULT true NOT NULL;

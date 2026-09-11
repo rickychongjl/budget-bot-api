@@ -25,6 +25,12 @@ export interface UsageRow {
   messageId: string;
   admittedAt: Instant;
   localDate: LocalDate;
+  /**
+   * False for a message admitted while the user was still onboarding (M7 4B). The row
+   * is still written and still counts toward fair use; `countUsageOnLocalDate` skips
+   * it. See `AdmitMessageOptions` in `./entitlement-service.ts`.
+   */
+  countsTowardDaily: boolean;
 }
 
 export interface WindowUsage {
@@ -39,7 +45,9 @@ export interface EntitlementReads {
   /** The user's `status = 'active'` row, if any. At most one exists (partial unique index). */
   findActiveEntitlement(userId: UserId): Promise<EntitlementRow | null>;
   hasUsage(userId: UserId, messageId: string): Promise<boolean>;
+  /** Every admitted row in the window, including the onboarding-exempt ones. */
   getUsageInWindow(userId: UserId, after: Instant): Promise<WindowUsage>;
+  /** Only rows with `countsTowardDaily` — the Free daily cap's view of the day. */
   countUsageOnLocalDate(userId: UserId, localDate: LocalDate): Promise<number>;
 }
 

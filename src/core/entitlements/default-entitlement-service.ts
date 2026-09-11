@@ -3,6 +3,7 @@ import type { Instant, Tier, UserId } from '../shared/common';
 import {
   EntitlementRefusal,
   type AdmissionResult,
+  type AdmitMessageOptions,
   type CapacityCounts,
   type DowngradeEligibility,
   type EntitlementService,
@@ -89,8 +90,19 @@ export class DefaultEntitlementService<X> implements EntitlementService {
    *      an already-counted message is never refused and never counted again
    *   3. fair-use rolling window (both tiers) and Free daily cap, evaluated together
    *   4. refused → return without writing; admitted → insert the `usage_counter` row
+   *
+   * `options.skipDailyCap` waives step 3's daily half only — M7 passes it for a user
+   * who has not finished onboarding, who would otherwise exhaust Free's five-message
+   * day on the sign-up flow itself (`AdmitMessageOptions`). The row is still written,
+   * flagged `countsTowardDaily: false`, so fair use still sees it and the day's real
+   * quota is untouched once the account is live.
    */
-  async admitMessage(userId: UserId, messageId: string, receivedAt: Instant): Promise<AdmissionResult> {
+  async admitMessage(
+    userId: UserId,
+    messageId: string,
+    receivedAt: Instant,
+    options: AdmitMessageOptions = {},
+  ): Promise<AdmissionResult> {
     const timeZone = await this.timezoneOf(userId);
     const { fairUse } = this.limits;
 
@@ -111,8 +123,10 @@ export class DefaultEntitlementService<X> implements EntitlementService {
           ? window.earliest + fairUse.windowMs
           : null;
 
+      const countsTowardDaily = options.skipDailyCap !== true;
+
       let dailyRetryAt: Instant | null = null;
-      if (tierLimits.dailyMessages !== null) {
+      if (tierLimits.dailyMessages !== null && countsTowardDaily) {
         const used = await tx.countUsageOnLocalDate(userId, localDate);
         if (used >= tierLimits.dailyMessages) dailyRetryAt = nextLocalMidnight(receivedAt, timeZone);
       }
@@ -121,7 +135,7 @@ export class DefaultEntitlementService<X> implements EntitlementService {
         return this.refusal({ receivedAt, timeZone, tierLimits, fairUseRetryAt, dailyRetryAt });
       }
 
-      await tx.recordUsage({ userId, messageId, admittedAt: receivedAt, localDate });
+      await tx.recordUsage({ userId, messageId, admittedAt: receivedAt, localDate, countsTowardDaily });
       return { outcome: 'admitted' };
     });
   }
