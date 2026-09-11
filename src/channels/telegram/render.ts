@@ -1,6 +1,9 @@
 import { formatMoney } from '../../core/allowance/messages';
+import type { Period } from '../../core/budgets/budget-service';
+import type { UserSettings } from '../../core/identity/identity-service';
 import type { AccountSummary, OnboardingPrompt, OnboardingReply } from '../../core/identity/onboarding';
-import type { RefusalCode } from '../../core/shared/common';
+import type { TransactionDirection } from '../../core/ledger/ledger-service';
+import type { CurrencyCode, LocalDate, MinorUnits, RefusalCode, Tier } from '../../core/shared/common';
 import type { OutboundMessage } from '../../core/shared/messaging';
 import { sanitiseDisplayText } from '../../core/shared/text';
 
@@ -166,6 +169,216 @@ export function renderAccountSummary(summary: AccountSummary): string {
     }
   }
   return lines.join('\n');
+}
+
+// ---- stage 4C's command views ---------------------------------------------------
+
+/**
+ * Every figure below arrives already computed. These functions choose wording and
+ * order; if one of them ever had to add, divide or compare money, that arithmetic
+ * would belong in the module that owns the number (M7: "this module may decide *how*
+ * a figure is rendered; never *what* the figure is").
+ */
+
+/**
+ * `/settings` — **view only this pass** (Ricky, 11 Sep 2026).
+ *
+ * Timezone is immutable by M2's design and says so; the rest is shown without an edit
+ * affordance, because there is no command that writes it. When settings do become
+ * editable, the usage lines go here and `/settings` grows a write path — not before.
+ */
+export function renderSettings(settings: UserSettings, tier: Tier): string {
+  const lines = [
+    'Your settings',
+    '',
+    `Plan: ${tier === 'premium' ? 'Premium' : 'Free'}`,
+    `Timezone: ${settings.timezone} (fixed when you signed up)`,
+    `Currency: ${settings.currencyCode}`,
+  ];
+  if (settings.periodAnchorDate !== null) {
+    lines.push(`Budget cycle starts: ${formatShortDate(settings.periodAnchorDate)} each month`);
+  }
+  lines.push(`Daily reminder: ${settings.reminderLocalTime}`);
+  lines.push('', 'These are fixed for now — I can show them, but not change them yet.');
+  return lines.join('\n');
+}
+
+export interface CategoryLine {
+  name: string;
+  capMinorUnits: MinorUnits | null;
+  reminder: boolean;
+}
+
+export function renderCategoryList(
+  lines: readonly CategoryLine[],
+  currency: CurrencyCode,
+): string {
+  if (lines.length === 0) return 'You have no categories yet. Add one with /categories add <name>.';
+
+  const rendered = lines.map((line) => {
+    const cap = line.capMinorUnits === null ? 'no budget' : formatMoney(line.capMinorUnits, currency);
+    const reminder = line.reminder ? ', reminder on' : '';
+    return `- ${sanitiseDisplayText(line.name)}: ${cap}${reminder}`;
+  });
+
+  return ['Your categories', '', ...rendered, '', CATEGORY_USAGE].join('\n');
+}
+
+export const CATEGORY_USAGE = [
+  '/categories add <name>',
+  '/categories rename <old> <new>',
+  '/categories archive <name>',
+].join('\n');
+
+export interface BudgetLine {
+  name: string;
+  capMinorUnits: MinorUnits;
+  /** Null when nothing has been logged in this cycle yet, so no snapshot exists. */
+  snapshotCapMinorUnits: MinorUnits | null;
+}
+
+/**
+ * `/budget` with no arguments shows the **current-period snapshot** (M4, confirmed
+ * 5 Sep). The two only differ right after a mid-cycle change, and then both are shown
+ * — the user needs to know this month is still running on the old figure.
+ */
+export function renderBudgetList(
+  lines: readonly BudgetLine[],
+  currency: CurrencyCode,
+  period: Period,
+): string {
+  if (lines.length === 0) {
+    return 'You have no budgets yet. Set one with /budget <category> <amount>.';
+  }
+
+  const rendered = lines.map((line) => {
+    const name = sanitiseDisplayText(line.name);
+    const standing = formatMoney(line.capMinorUnits, currency);
+    if (line.snapshotCapMinorUnits === null || line.snapshotCapMinorUnits === line.capMinorUnits) {
+      return `- ${name}: ${standing}`;
+    }
+    const snapshot = formatMoney(line.snapshotCapMinorUnits, currency);
+    return `- ${name}: ${snapshot} this cycle (${standing} from next cycle)`;
+  });
+
+  return [
+    `Your budgets for ${formatPeriod(period)}`,
+    '',
+    ...rendered,
+    '',
+    'Change one with /budget <category> <amount>.',
+  ].join('\n');
+}
+
+export interface StatsLine {
+  name: string;
+  capMinorUnits: MinorUnits;
+  spentMinorUnits: MinorUnits;
+}
+
+/**
+ * `/stats` — plain text (open decision 3, and M11's recommendation). "Left" can go
+ * negative; that is M3's arithmetic showing an overspend, not an error to hide.
+ */
+export function renderStats(
+  lines: readonly StatsLine[],
+  currency: CurrencyCode,
+  period: Period,
+): string {
+  if (lines.length === 0) {
+    return 'You have no budgets yet, so there is nothing to summarise. Set one with /budget.';
+  }
+
+  const rendered = lines.map((line) => {
+    const left = line.capMinorUnits - line.spentMinorUnits;
+    const spent = formatMoney(line.spentMinorUnits, currency);
+    const cap = formatMoney(line.capMinorUnits, currency);
+    const tail =
+      left < 0n ? `${formatMoney(-left, currency)} over` : `${formatMoney(left, currency)} left`;
+    return `- ${sanitiseDisplayText(line.name)}: ${spent} of ${cap}, ${tail}`;
+  });
+
+  return [`This cycle (${formatPeriod(period)})`, '', ...rendered].join('\n');
+}
+
+// ---- history --------------------------------------------------------------------
+
+/** `hist:<cursor>` — the one callback prefix stage 4C introduces. */
+export function historyCallbackData(cursor: string): string {
+  return `hist:${cursor}`;
+}
+
+export function parseHistoryCallbackData(data: string): string | null {
+  if (!data.startsWith('hist:')) return null;
+  const cursor = data.slice('hist:'.length);
+  return cursor === '' ? null : cursor;
+}
+
+export interface HistoryLine {
+  occurredOn: LocalDate;
+  direction: TransactionDirection;
+  amountMinorUnits: MinorUnits;
+  /** Null for a transaction whose category was removed. */
+  categoryName: string | null;
+  merchant: string | null;
+  note: string | null;
+}
+
+/**
+ * Forward-only paging: `Page<T>` carries a `nextCursor` and nothing else, so there is
+ * no "previous" to offer without changing M3's contract (phase-4 plan, 4C finding 1;
+ * Ricky's call, 11 Sep). A chat transcript pages downward anyway.
+ *
+ * The button is dropped rather than truncated if a cursor will not fit Telegram's
+ * 64-byte `callback_data` — a button that silently fails is worse than none.
+ */
+export function renderHistoryPage(
+  lines: readonly HistoryLine[],
+  currency: CurrencyCode,
+  nextCursor: string | null,
+): OutboundMessage {
+  if (lines.length === 0) return { text: refusalText('NO_TRANSACTIONS') };
+
+  const rendered = lines.map((line) => {
+    const amount = formatMoney(line.amountMinorUnits, currency);
+    const sign = line.direction === 'expense' ? '' : `${line.direction} `;
+    const where = [line.merchant, line.note]
+      .filter((part): part is string => part !== null && part.trim() !== '')
+      .map((part) => sanitiseDisplayText(part))
+      .join(' — ');
+    const category = line.categoryName === null ? 'uncategorised' : sanitiseDisplayText(line.categoryName);
+    const tail = where === '' ? category : `${category} — ${where}`;
+    return `${formatShortDate(line.occurredOn)}  ${sign}${amount}  ${tail}`;
+  });
+
+  const text = ['Recent entries', '', ...rendered].join('\n');
+
+  if (nextCursor === null) return { text };
+  const data = historyCallbackData(nextCursor);
+  if (!fitsCallbackData(data)) return { text };
+
+  return {
+    text,
+    replyMarkup: {
+      inline_keyboard: [[{ text: 'More', callback_data: data }]],
+    } satisfies InlineKeyboardMarkup,
+  };
+}
+
+// ---- dates ----------------------------------------------------------------------
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** `2026-09-11` → `11 Sep`. Presentation only; the date itself is M3's. */
+export function formatShortDate(localDate: LocalDate): string {
+  const [, month, day] = localDate.split('-');
+  const name = MONTHS[Number(month) - 1];
+  if (name === undefined || day === undefined) return localDate;
+  return `${Number(day)} ${name}`;
+}
+
+function formatPeriod(period: Period): string {
+  return `${formatShortDate(period.start)} – ${formatShortDate(period.end)}`;
 }
 
 // ---- pagination -----------------------------------------------------------------

@@ -64,7 +64,33 @@ describe('the catalogue', () => {
 
   it('finds a registered command and nothing else', () => {
     expect(catalogue.find('help')?.name).toBe('help');
-    expect(catalogue.find('today')).toBeNull(); // arrives in 4C
+    expect(catalogue.find('today')?.name).toBe('today');
+    expect(catalogue.find('nonsense')).toBeNull();
+  });
+
+  it('registers all sixteen commands Ricky approved', () => {
+    expect(catalogue.all().map((handler) => handler.name).sort()).toEqual([
+      'budget',
+      'cancel',
+      'categories',
+      'delete',
+      'export',
+      'help',
+      'history',
+      'paysupport',
+      'remind',
+      'settings',
+      'start',
+      'stats',
+      'subscribe',
+      'subscription',
+      'today',
+      'upgrade',
+    ]);
+  });
+
+  it('puts /start first, because it is the only way in', () => {
+    expect(catalogue.all()[0]?.name).toBe('start');
   });
 
   it('gives every command a description short enough for the Telegram menu', () => {
@@ -95,7 +121,9 @@ describe('the catalogue', () => {
       .map((handler) => handler.name)
       .sort();
 
-    expect(open).toEqual(['help', 'paysupport']);
+    // `/start` joined them in 4C: it is the command that *creates* the account, so it
+    // is by definition answerable without one.
+    expect(open).toEqual(['help', 'paysupport', 'start']);
   });
 
   it('advertises /export as coming soon, so the menu does not lie', () => {

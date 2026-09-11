@@ -18,8 +18,15 @@ import type { Logger } from '../../observability/log';
 import type { CommandHandler, CommandRouter, CommandServices } from './command-router';
 import { parseCommand } from './command-router';
 import { UNKNOWN_COMMAND } from './commands/catalogue';
+import { historyPage } from './commands/history';
 import type { GatewayRepository } from './gateway-repository';
-import { paginate, parseOnboardingCallbackData, renderOnboardingReply, renderRefusal } from './render';
+import {
+  paginate,
+  parseHistoryCallbackData,
+  parseOnboardingCallbackData,
+  renderOnboardingReply,
+  renderRefusal,
+} from './render';
 import type { TelegramEvent, TelegramSender } from './update-parser';
 
 /** Every event except the ones the parser already decided are not for us. */
@@ -259,8 +266,17 @@ export class TelegramDispatcher {
       return renderOnboardingReply(reply);
     }
 
-    // `pc:`, `map:`, `cat:`, `hist:` prefixes arrive in 4C/4D. Until their handlers
-    // exist, a press is stale by definition rather than silently ignored.
+    // `/history`'s More button — the one callback prefix stage 4C introduces. It routes
+    // to the same function the command itself uses, so a continued page can never
+    // render differently from the page it continues. M3 scopes the read to this user,
+    // so a replayed or forged cursor can still only return the presser's own rows.
+    const cursor = parseHistoryCallbackData(data);
+    if (cursor !== null) {
+      return historyPage(this.commandServices(), resolved.userId, cursor);
+    }
+
+    // `pc:` and `map:` arrive in 4D. Until their handlers exist, a press is stale by
+    // definition rather than silently ignored.
     this.deps.logger.log('info', 'telegram.callback.unrouted', { prefix: data.split(':')[0] ?? '' });
     return renderRefusal('STALE_ACTION');
   }

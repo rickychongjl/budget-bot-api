@@ -152,11 +152,23 @@ describe('event kinds', () => {
   });
 
   it('always acknowledges a callback query, even an unrouted one', async () => {
-    await dispatch(callbackUpdate('hist:next:abc'));
+    // `pc:` is 4D's prefix; nothing routes it yet, so the press is stale by definition.
+    await dispatch(callbackUpdate('pc:yes'));
 
     expect(h.callbacks.answered).toHaveLength(1);
-    // No handler for `hist:` until 4C, so the press is stale by definition.
     expect(h.sender.onlyText).toContain('out of date');
+  });
+
+  it('routes /history More to the same page the command renders', async () => {
+    const food = await h.seedCategory(USER, 'Food', { cap: 60000n });
+    await h.spend(USER, food, 1250n, '2026-09-11');
+
+    await dispatch(callbackUpdate('hist:not-a-real-cursor'));
+
+    expect(h.callbacks.answered).toHaveLength(1);
+    // M3 owns cursor validity and refuses in its own words, which beats a generic
+    // "that button is out of date" — the press reached the real read path.
+    expect(h.sender.onlyText).toBe('That page link is no longer valid.');
   });
 
   it('routes an onboarding button to M2 with its step attached', async () => {
