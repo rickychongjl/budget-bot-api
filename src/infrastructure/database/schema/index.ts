@@ -7,7 +7,7 @@
  * Table ownership:
  *   identity.ts       M2  app_user, channel_connection
  *   category.ts       M3  category
- *   budget.ts         M4  budget, budget_period
+ *   budget.ts         M4  budget, budget_period, category_period_cap
  *   transaction.ts    M3  transaction
  *   allowance.ts      M5  daily_allowance_send
  *   entitlement.ts    M8  entitlement, usage_counter

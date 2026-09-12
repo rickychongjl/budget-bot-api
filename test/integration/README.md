@@ -16,6 +16,14 @@ Neon branch and therefore always runs. PGlite is a single connection, so it prov
 constraints, FK behaviour and generated SQL but *not* genuine concurrency; anything
 that needs two real writers belongs in a `DATABASE_URL` suite.
 
+Every PGlite suite builds its schema with `applyMigrations` from
+`test/support/pglite-migrations.ts`, which applies the **committed migrations in
+`meta/_journal.json` order** — the same files `db:migrate` runs — so no suite can
+drift from a deploy, and a new migration reaches every suite the moment it is
+committed. A suite that has to seed an *old* shape (the `migration-NNNN-*` tests)
+applies `{ through }` the migration before, seeds, then `applyMigration`s the one
+under test. Do not import individual `.sql` files into a suite.
+
 - `identity.test.ts` (M2): concurrent `register` race against the
   `(channel, external_id)` unique constraint, the conditional once-only timezone
   write, settings round-trip, check constraints, cascade delete. Cascade coverage is
@@ -27,6 +35,4 @@ that needs two real writers belongs in a `DATABASE_URL` suite.
   `budget_one_active_per_category` partial index, lazy period materialisation through
   the `on conflict do nothing` path, snapshot immutability across a cap change, the
   netting SQL (`expenses - refunds`, `income` excluded), keyset pagination and user
-  scoping, the archive-eligibility query, cascade delete and `set null`. It builds its
-  schema by executing the **committed migration files** (`?raw` imports) rather than a
-  hand-copied DDL block, so it cannot drift from what a deploy applies.
+  scoping, the archive-eligibility query, cascade delete and `set null`.

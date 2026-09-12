@@ -151,7 +151,7 @@ The Notion page originally called this out as unresolved: *"introduce an explici
 
 ## Invariants to enforce
 - `amount_minor_units` is always positive; direction carries the sign.
-- A confirmed transaction with a category that has an active budget always has a `budget_period_id`.
+- A confirmed transaction with a category that has an active budget always has a `budget_period_id` — **qualified 12 Sep:** when its date falls in a cycle that category carried a cap in. Backdated into a cycle before the budget existed, it is recorded with a null `budget_period_id`, exactly like an expense on an uncapped category (M4, "Changing a cap").
 - `raw_text` is retained for every parsed transaction, so a correction can show the user what they originally sent.
 - Every read used for budget maths filters `status = 'confirmed'`.
 - Every query behind `history` (and `exportCsv`, once it's built — see task checklist) is scoped to the requesting `userId` — no code path can return another user's rows.

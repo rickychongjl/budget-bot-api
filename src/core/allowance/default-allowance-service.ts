@@ -244,14 +244,14 @@ export class DefaultAllowanceService<X>
   }
 
   /**
-   * M4 calls this after `setCap` has moved the standing budget and the current cycle's
-   * snapshot. Re-prices today's persisted target from the new cap so the change is
+   * M4 calls this after `setCap` has written the current cycle's cap row. Re-prices
+   * today's persisted target from the new cap so the change is
    * spendable today — regardless of delivery state, and without a second send: a row
    * the 07:00 bundle already delivered keeps `sent` and its `sent_at`, and only the
    * number moves. `/today` then shows the new figure; the morning message is history.
    *
    * No row for today means nothing to rewrite — the day's first read computes from the
-   * new snapshot anyway. No active budget means the category was uncapped in the same
+   * new cap anyway. No active budget means the category was uncapped in the same
    * breath, and its row is left for M5's usual eligibility revalidation to retire.
    */
   async capChanged(userId: UserId, categoryId: Id): Promise<void> {
@@ -264,8 +264,8 @@ export class DefaultAllowanceService<X>
     if (!budget) return;
 
     // `ensurePeriod` is a read here: the row's `budget_period_id` proves the period
-    // already exists, and `setCap` has just rewritten its cap. Going through M4 rather
-    // than reading the snapshot ourselves keeps the table M4's (master plan §2, rule 2).
+    // already exists, and M4 resolves its cap from the row `setCap` just wrote. Going
+    // through M4 rather than reading its tables keeps them M4's (master plan §2, rule 2).
     const period = await this.budgets.ensurePeriod(userId, budget.id, today);
     const dailyTarget = await this.targetFor(userId, period, today);
     await this.repository.updateTarget(userId, categoryId, today, dailyTarget);

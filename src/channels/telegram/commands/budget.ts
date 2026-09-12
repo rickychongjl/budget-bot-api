@@ -13,8 +13,8 @@ import { nameIndex, requireCategory, today } from './context';
  *   /budget "Eating Out"         just that one
  *   /budget "Eating Out" 300     set the cap
  *
- * `setCap` writes the standing budget **and** the current period's snapshot, because
- * the user means "my budget is 300 now", not "from next month" (M4) — and M4 then has
+ * `setCap` writes the current cycle's cap row, because the user means "my budget is
+ * 300 now", not "from next month" (M4; later cycles read it until superseded) — and M4 then has
  * M5 re-price today's daily figure from the new cap (Ricky, 11 Sep: a raise today gives
  * you more to spend today). The confirmation shows that figure by asking M5 for it,
  * worded by M5's own `renderAllowanceLine` so it cannot disagree with `/today`.
@@ -46,8 +46,8 @@ export const budgetCommand: CommandHandler = {
     if (name !== undefined && amount !== undefined) {
       const category = await requireCategory(context, userId, name);
       const cap = parseAmount(amount, settings.currencyCode);
-      const saved = await context.services.budgets.setCap(userId, category.id, cap);
-      const headline = `${category.name} is now ${formatMoney(saved.capMinorUnits, settings.currencyCode)} a cycle.`;
+      await context.services.budgets.setCap(userId, category.id, cap);
+      const headline = `${category.name} is now ${formatMoney(cap, settings.currencyCode)} a cycle.`;
       // The same read `/today` makes — computing and persisting today's row if this is
       // the first time anything has asked for it — so the figure here is the one the
       // user will see for the rest of the day.
@@ -61,12 +61,11 @@ export const budgetCommand: CommandHandler = {
     const views = await context.services.budgets.currentBudgets(userId, localDate);
     const names = nameIndex(await context.services.categories.list(userId, { includeArchived: true }));
 
-    // The current cycle's snapshot is what the user is actually living under; the
-    // standing figure only stands in when nothing has been logged this cycle yet and
-    // no snapshot row exists (M4 has deliberately no cron opening periods in advance).
+    // One figure per category: the cap governing the current cycle, which M4 resolves
+    // from its history whether or not anything has been logged this cycle yet.
     let lines: BudgetLine[] = views.map((view) => ({
       name: view.budget.categoryId === null ? 'Everything' : names.get(view.budget.categoryId) ?? 'Unknown',
-      capMinorUnits: view.snapshotCapMinorUnits ?? view.budget.capMinorUnits,
+      capMinorUnits: view.capMinorUnits,
     }));
 
     let period = views[0]?.period;
@@ -75,10 +74,7 @@ export const budgetCommand: CommandHandler = {
       const category = await requireCategory(context, userId, name);
       const only = views.filter((view) => view.budget.categoryId === category.id);
       period = only[0]?.period ?? period;
-      lines = only.map((view) => ({
-        name: category.name,
-        capMinorUnits: view.snapshotCapMinorUnits ?? view.budget.capMinorUnits,
-      }));
+      lines = only.map((view) => ({ name: category.name, capMinorUnits: view.capMinorUnits }));
       if (lines.length === 0) {
         return { text: `"${category.name}" has no budget yet. Set one with /budget "${category.name}" <amount>.` };
       }

@@ -449,15 +449,20 @@ export class OnboardingService {
   }
 
   async summarise(userId: UserId): Promise<AccountSummary> {
-    const [settings, tier, categories, budgets, enabled] = await Promise.all([
-      this.deps.identity.getSettings(userId),
+    const settings = await this.deps.identity.getSettings(userId);
+    // Caps are per cycle (M4), so reading them needs the user's today — which needs the
+    // anchor and timezone. Before step 3 there is no anchor, and no budget either.
+    const views =
+      settings.periodAnchorDate === null
+        ? []
+        : await this.deps.budgets.currentBudgets(userId, localDateAt(this.deps.clock.now(), settings.timezone));
+    const [tier, categories, enabled] = await Promise.all([
       this.deps.entitlements.tierOf(userId),
       this.deps.categories.list(userId),
-      this.deps.budgets.activeBudgets(userId),
       this.deps.reminders.enabledCategoryIds(userId),
     ]);
     const capByCategory = new Map<Id, MinorUnits>();
-    for (const b of budgets) if (b.categoryId !== null && b.isActive) capByCategory.set(b.categoryId, b.capMinorUnits);
+    for (const v of views) if (v.budget.categoryId !== null) capByCategory.set(v.budget.categoryId, v.capMinorUnits);
     return {
       settings,
       tier,

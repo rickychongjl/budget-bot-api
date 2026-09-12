@@ -2,9 +2,6 @@ import { PGlite } from '@electric-sql/pglite';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
-import identityDdl from '../../src/infrastructure/database/migrations/0000_identity.sql?raw';
-import ledgerDdl from '../../src/infrastructure/database/migrations/0003_flashy_true_believers.sql?raw';
-import allowanceDdl from '../../src/infrastructure/database/migrations/0004_faithful_baron_zemo.sql?raw';
 import { DefaultBudgetService } from '../../src/core/budgets';
 import {
   DefaultCategoryService,
@@ -20,6 +17,7 @@ import {
 } from '../../src/infrastructure/database/repositories/drizzle-budget-repository';
 import { DrizzleLedgerRepository } from '../../src/infrastructure/database/repositories/drizzle-ledger-repository';
 import type { Database } from '../../src/infrastructure/database/client';
+import { applyMigrations } from '../support/pglite-migrations';
 import { TestClock } from '../support/test-clock';
 
 /**
@@ -31,8 +29,8 @@ import { TestClock } from '../support/test-clock';
  *
  * Runs in-process on PGlite (real Postgres, WASM), so it needs no Neon branch and no
  * `DATABASE_URL` — same approach as `parse-event-fk.test.ts`. The schema is built by
- * executing the **committed migration files**, not a hand-copied DDL block, so this
- * suite cannot drift away from what a deploy applies.
+ * applying the **committed migrations in journal order**, not a hand-copied DDL
+ * block, so this suite cannot drift away from what a deploy applies.
  *
  * What PGlite cannot show is genuine parallelism: it is a single connection, so the
  * `ensurePeriod` race is exercised here as the conflict *path* plus the constraint
@@ -105,10 +103,7 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
   let otherUserId: string;
 
   beforeAll(async () => {
-    await pg.exec(identityDdl);
-    await pg.exec(ledgerDdl);
-    // M5's migration adds `category.reminder_enabled`, which M3's own reads now select.
-    await pg.exec(allowanceDdl);
+    await applyMigrations(pg);
   }, 60_000);
 
   afterAll(async () => {
@@ -196,25 +191,44 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
   });
 
   it('rejects a non-positive cap and an inverted period range', async () => {
+    const { category, budget } = await budgeted('Food');
     expect(
       await constraintViolatedBy(
         pg.query(
-          `insert into budget (user_id, cap_minor_units, currency_code) values ($1, 0, 'AUD')`,
-          [userId],
+          `insert into category_period_cap (user_id, category_id, period_key, cap_minor_units, currency_code) values ($1, $2, '2026-10', 0, 'AUD')`,
+          [userId, category.id],
         ),
       ),
-    ).toBe('budget_cap_positive');
+    ).toBe('category_period_cap_positive');
 
-    const { budget } = await budgeted('Food');
     expect(
       await constraintViolatedBy(
         pg.query(
-          `insert into budget_period (user_id, budget_id, period_key, period_start, period_end, cap_minor_units)
-           values ($1, $2, '2026-09', '2026-10-04', '2026-09-05', 100)`,
+          `insert into budget_period (user_id, budget_id, period_key, period_start, period_end)
+           values ($1, $2, '2026-09', '2026-10-04', '2026-09-05')`,
           [userId, budget.id],
         ),
       ),
     ).toBe('budget_period_range');
+  });
+
+  it('keeps one governing row per category per cycle (the unique constraint behind the upsert)', async () => {
+    const { category } = await budgeted('Food');
+    expect(
+      await constraintViolatedBy(
+        pg.query(
+          `insert into category_period_cap (user_id, category_id, period_key, cap_minor_units, currency_code) values ($1, $2, '2026-09', 500, 'AUD')`,
+          [userId, category.id],
+        ),
+      ),
+    ).toBe('category_period_cap_category_key_unique');
+
+    // The service path lands on `on conflict do update`, not the error.
+    await budgets.setCap(userId, category.id, 70_000n);
+    const rows = await db.execute(
+      sql`select cap_minor_units::text as cap from category_period_cap where category_id = ${category.id}`,
+    );
+    expect((rows as unknown as { rows: { cap: string }[] }).rows).toEqual([{ cap: '70000' }]);
   });
 
   it('keeps at most one active budget per category (the partial unique index)', async () => {
@@ -222,7 +236,7 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
     expect(
       await constraintViolatedBy(
         pg.query(
-          `insert into budget (user_id, category_id, cap_minor_units, currency_code) values ($1, $2, 500, 'AUD')`,
+          `insert into budget (user_id, category_id) values ($1, $2)`,
           [userId, category.id],
         ),
       ),
@@ -230,9 +244,8 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
 
     // Deactivating frees the slot — the index only covers `is_active` rows.
     await budgets.deactivate(userId, budget.id);
-    await expect(budgets.setCap(userId, category.id, 30_000n)).resolves.toMatchObject({
-      capMinorUnits: 30_000n,
-    });
+    await budgets.setCap(userId, category.id, 30_000n);
+    expect((await budgets.currentBudgets(userId, '2026-09-10')).map((v) => v.capMinorUnits)).toEqual([30_000n]);
   });
 
   // ---- lazy materialisation --------------------------------------------------------
@@ -250,12 +263,10 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
       periodKey: '2026-09',
       periodStart: '2026-09-05',
       periodEnd: '2026-10-04',
-      capMinorUnits: 999n,
       now: clock.now(),
     });
 
     expect(second.id).toBe(first.id);
-    expect(second.capMinorUnits).toBe(60_000n); // the loser's cap never overwrites
     const count = await db.execute(sql`select count(*)::int as n from budget_period`);
     expect((count as unknown as { rows: { n: number }[] }).rows[0]?.n).toBe(1);
   });
@@ -266,27 +277,69 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
     expect(
       await constraintViolatedBy(
         pg.query(
-          `insert into budget_period (user_id, budget_id, period_key, period_start, period_end, cap_minor_units)
-           values ($1, $2, '2026-09', '2026-09-05', '2026-10-04', 100)`,
+          `insert into budget_period (user_id, budget_id, period_key, period_start, period_end)
+           values ($1, $2, '2026-09', '2026-09-05', '2026-10-04')`,
           [userId, budget.id],
         ),
       ),
     ).toBe('budget_period_budget_key_unique');
   });
 
-  it('snapshots a past period immutably while the current one follows a cap change', async () => {
-    const { category, budget } = await budgeted('Food');
-    clock.set('2026-08-20T02:00:00Z');
-    const august = await budgets.ensurePeriod(userId, budget.id, '2026-08-20');
+  // ---- the cap history --------------------------------------------------------------
+
+  it('resolves each cycle"s cap from the greatest key at or before it — the real query', async () => {
+    clock.set('2026-07-15T02:00:00Z');
+    const { category, budget } = await budgeted('Food', 100_000n); // July: 1000
     clock.set(CLOCK);
-    const september = await budgets.ensurePeriod(userId, budget.id, '2026-09-10');
+    await budgets.setCap(userId, category.id, 120_000n); // September: 1200; August untouched
 
-    await budgets.setCap(userId, category.id, 45_000n);
+    // August, opened late by a backdated expense, gets July's cap — not September's.
+    expect((await budgets.ensurePeriod(userId, budget.id, '2026-08-20')).capMinorUnits).toBe(100_000n);
+    expect((await budgets.ensurePeriod(userId, budget.id, '2026-09-10')).capMinorUnits).toBe(120_000n);
+    expect((await budgets.ensurePeriod(userId, budget.id, '2026-11-10')).capMinorUnits).toBe(120_000n);
+    // And before any row existed, there is nothing to divide by.
+    await expect(budgets.ensurePeriod(userId, budget.id, '2026-06-10')).rejects.toMatchObject({
+      code: 'RESOURCE_NOT_FOUND',
+    });
 
-    expect(await budgetRepository.findPeriod(userId, budget.id, august.periodKey)).toEqual(august);
-    expect((await budgetRepository.findPeriod(userId, budget.id, september.periodKey))?.capMinorUnits).toBe(
-      45_000n,
+    expect(await budgetRepository.findGoverningCap(userId, category.id, '2026-08')).toMatchObject({
+      periodKey: '2026-07',
+      capMinorUnits: 100_000n,
+    });
+  });
+
+  it('finds every category"s governing row in one distinct-on query', async () => {
+    clock.set('2026-07-15T02:00:00Z');
+    const food = await budgeted('Food', 100_000n);
+    clock.set(CLOCK);
+    const fun = await budgeted('Fun', 25_000n); // September only
+    await budgets.setCap(userId, food.category.id, 120_000n); // Food now has July and September rows
+
+    const september = await budgetRepository.findGoverningCaps(userId, '2026-09');
+    expect(
+      september.map((c) => [c.categoryId, c.periodKey, c.capMinorUnits]).sort(),
+    ).toEqual(
+      [
+        [food.category.id, '2026-09', 120_000n],
+        [fun.category.id, '2026-09', 25_000n],
+      ].sort(),
     );
+    // In August only Food existed, governed by July's row.
+    expect(await budgetRepository.findGoverningCaps(userId, '2026-08')).toMatchObject([
+      { categoryId: food.category.id, periodKey: '2026-07', capMinorUnits: 100_000n },
+    ]);
+    expect(await budgetRepository.findGoverningCaps(otherUserId, '2026-09')).toEqual([]);
+  });
+
+  it('a removal writes a null row that stops the last cap carrying forward', async () => {
+    const { category, budget } = await budgeted('Food');
+    await budgets.deactivate(userId, budget.id);
+
+    expect(await budgetRepository.findGoverningCap(userId, category.id, '2026-12')).toMatchObject({
+      periodKey: '2026-09',
+      capMinorUnits: null,
+    });
+    expect(await budgets.currentBudgets(userId, '2026-09-10')).toEqual([]);
   });
 
   // ---- recording -------------------------------------------------------------------
@@ -489,7 +542,7 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
 
     await db.execute(sql`delete from app_user where id = ${userId}`);
 
-    for (const table of ['category', 'budget', 'budget_period', '"transaction"']) {
+    for (const table of ['category', 'budget', 'budget_period', 'category_period_cap', '"transaction"']) {
       const rows = await db.execute(sql.raw(`select count(*)::int as n from ${table}`));
       expect((rows as unknown as { rows: { n: number }[] }).rows[0]?.n).toBe(0);
     }

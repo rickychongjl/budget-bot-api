@@ -181,6 +181,8 @@ export class FakeCategories implements CategoryService {
 
 export class FakeBudgets implements BudgetService {
   readonly rows: Budget[] = [];
+  /** The cap per category — M4 keeps this per cycle; M2's tests only ever see the current one. */
+  readonly caps = new Map<Id, MinorUnits>();
   #seq = 0;
 
   async periodFor(): Promise<Period> {
@@ -194,23 +196,25 @@ export class FakeBudgets implements BudgetService {
     return this.rows.filter((b) => b.userId === userId && b.isActive);
   }
 
-  /** M2 never renders `/budget`; present only to satisfy the port. */
-  async currentBudgets(_userId: UserId, _localDate: LocalDate): Promise<readonly BudgetView[]> {
-    throw new Error('not used');
+  /** The account summary reads caps through this; the period itself is not looked at. */
+  async currentBudgets(userId: UserId, _localDate: LocalDate): Promise<readonly BudgetView[]> {
+    return this.rows
+      .filter((b) => b.userId === userId && b.isActive)
+      .map((budget) => ({
+        budget,
+        period: { key: '2026-09', start: '2026-09-05', end: '2026-10-04' },
+        capMinorUnits: this.caps.get(budget.categoryId as Id) ?? 0n,
+      }));
   }
 
   async setCap(userId: UserId, categoryId: Id, cap: MinorUnits): Promise<Budget> {
+    this.caps.set(categoryId, cap);
     const existing = this.rows.find((b) => b.userId === userId && b.categoryId === categoryId && b.isActive);
-    if (existing) {
-      existing.capMinorUnits = cap;
-      return existing;
-    }
+    if (existing) return existing;
     const row: Budget = {
       id: `bud-${++this.#seq}`,
       userId,
       categoryId,
-      capMinorUnits: cap,
-      currencyCode: 'AUD',
       isActive: true,
       createdAt: 0,
       updatedAt: 0,
@@ -221,7 +225,10 @@ export class FakeBudgets implements BudgetService {
 
   async deactivate(userId: UserId, budgetId: Id): Promise<void> {
     const row = this.rows.find((b) => b.userId === userId && b.id === budgetId);
-    if (row) row.isActive = false;
+    if (row) {
+      row.isActive = false;
+      if (row.categoryId !== null) this.caps.delete(row.categoryId);
+    }
   }
 }
 

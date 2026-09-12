@@ -1,12 +1,9 @@
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import identityDdl from '../../src/infrastructure/database/migrations/0000_identity.sql?raw';
-import ledgerDdl from '../../src/infrastructure/database/migrations/0003_flashy_true_believers.sql?raw';
-import parseEventDdl from '../../src/infrastructure/database/migrations/0002_dashing_tempest.sql?raw';
-import gatewayDdl from '../../src/infrastructure/database/migrations/0005_watery_lightspeed.sql?raw';
 import type { Database } from '../../src/infrastructure/database/client';
 import { DrizzleGatewayRepository } from '../../src/infrastructure/database/repositories/drizzle-gateway-repository';
+import { applyMigrations } from '../support/pglite-migrations';
 
 /**
  * M7's two tables against real Postgres.
@@ -19,8 +16,8 @@ import { DrizzleGatewayRepository } from '../../src/infrastructure/database/repo
  * that deleting an account takes the prompt with it.
  *
  * Runs on PGlite (real Postgres, WASM) so it needs no Neon branch, and builds the
- * schema by executing the **committed migration files** — this suite cannot drift from
- * what a deploy would apply.
+ * schema by applying the **committed migrations in journal order** — this suite
+ * cannot drift from what a deploy would apply.
  */
 
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -33,11 +30,7 @@ const NOW = Date.parse('2026-09-11T02:00:00Z');
 
 beforeAll(async () => {
   pg = new PGlite();
-  await pg.exec(identityDdl);
-  await pg.exec(ledgerDdl);
-  // `pending_prompt.parse_event_id` references M9's table, so it has to exist first.
-  await pg.exec(parseEventDdl);
-  await pg.exec(gatewayDdl);
+  await applyMigrations(pg);
   db = drizzle(pg) as unknown as Database;
   repository = new DrizzleGatewayRepository(db);
 });

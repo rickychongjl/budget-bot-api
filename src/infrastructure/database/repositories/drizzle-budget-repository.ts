@@ -1,29 +1,37 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, lte } from 'drizzle-orm';
 import type {
   BudgetReads,
   BudgetRepository,
   BudgetWrites,
   NewBudgetPeriodInput,
+  StoredBudgetPeriod,
   UpsertBudgetInput,
+  UpsertPeriodCapInput,
 } from '../../../core/budgets/budget-repository';
-import type { Budget, BudgetPeriod } from '../../../core/budgets/budget-service';
-import type { Id, Instant, MinorUnits, UserId } from '../../../core/shared/common';
+import type { Budget, PeriodCap } from '../../../core/budgets/budget-service';
+import type { Id, Instant, UserId } from '../../../core/shared/common';
 import type { Database } from '../client';
-import { budget, budgetPeriod } from '../schema/budget';
+import { budget, budgetPeriod, categoryPeriodCap } from '../schema/budget';
 
 /**
  * `BudgetRepository` over Drizzle/Postgres — the only M4 code that touches a DB
  * handle, and the reason it lives in `infrastructure/` rather than `core/`.
  *
- * The module's one concurrency invariant is a constraint here, not a check in the
+ * The module's concurrency invariants are constraints here, not checks in the
  * service: `materialisePeriod` is `insert … on conflict (budget_id, period_key) do
  * nothing` followed by a select, so two messages arriving either side of a period
  * boundary serialise on `budget_period_budget_key_unique` and both end up holding the
- * same snapshot. A read-then-insert would produce two.
+ * same cycle; `upsertPeriodCap` is `on conflict (category_id, period_key) do update`,
+ * so two `/budget` messages in one cycle end with one governing row.
  *
- * `updatePeriodCap` deliberately takes a `period_key` rather than a row id: the caller
- * has already decided it means the *current* period, and naming it that way makes a
- * past period's snapshot impossible to touch by accident.
+ * The cap lookups are the module's one real query: the governing row for a cycle is
+ * `period_key <= :cycle order by period_key desc limit 1`, and for every category at
+ * once `distinct on (category_id)` with the same ordering. `'YYYY-MM'` keys sort
+ * chronologically as text, which is what makes both an index scan.
+ *
+ * `upsertPeriodCap` deliberately takes a `period_key` rather than a row id: the caller
+ * has already decided it means the *current* cycle, and naming it that way makes a
+ * past cycle's governing row impossible to touch by accident.
  */
 
 /** A Drizzle handle that may be the pool or an open transaction. Mirrors M8's. */
@@ -31,21 +39,20 @@ export type DatabaseExecutor = Database | Parameters<Parameters<Database['transa
 
 type BudgetRow = typeof budget.$inferSelect;
 type BudgetPeriodRow = typeof budgetPeriod.$inferSelect;
+type PeriodCapRow = typeof categoryPeriodCap.$inferSelect;
 
 function toBudget(row: BudgetRow): Budget {
   return {
     id: row.id,
     userId: row.userId,
     categoryId: row.categoryId,
-    capMinorUnits: row.capMinorUnits,
-    currencyCode: row.currencyCode,
     isActive: row.isActive,
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
   };
 }
 
-function toPeriod(row: BudgetPeriodRow): BudgetPeriod {
+function toPeriod(row: BudgetPeriodRow): StoredBudgetPeriod {
   return {
     id: row.id,
     userId: row.userId,
@@ -53,8 +60,19 @@ function toPeriod(row: BudgetPeriodRow): BudgetPeriod {
     periodKey: row.periodKey,
     periodStart: row.periodStart,
     periodEnd: row.periodEnd,
-    capMinorUnits: row.capMinorUnits,
     createdAt: row.createdAt.getTime(),
+  };
+}
+
+function toPeriodCap(row: PeriodCapRow): PeriodCap {
+  return {
+    userId: row.userId,
+    categoryId: row.categoryId,
+    periodKey: row.periodKey,
+    capMinorUnits: row.capMinorUnits,
+    currencyCode: row.currencyCode,
+    createdAt: row.createdAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
   };
 }
 
@@ -88,7 +106,7 @@ function operations(x: DatabaseExecutor): BudgetReads & BudgetWrites {
       return row ? toBudget(row) : null;
     },
 
-    async findPeriod(userId: UserId, budgetId: Id, periodKey: string): Promise<BudgetPeriod | null> {
+    async findPeriod(userId: UserId, budgetId: Id, periodKey: string): Promise<StoredBudgetPeriod | null> {
       const [row] = await x
         .select()
         .from(budgetPeriod)
@@ -103,15 +121,32 @@ function operations(x: DatabaseExecutor): BudgetReads & BudgetWrites {
       return row ? toPeriod(row) : null;
     },
 
-    async findPeriodsByKey(userId: UserId, periodKey: string): Promise<readonly BudgetPeriod[]> {
-      const rows = await x
+    async findGoverningCap(userId: UserId, categoryId: Id, periodKey: string): Promise<PeriodCap | null> {
+      const [row] = await x
         .select()
-        .from(budgetPeriod)
-        .where(and(eq(budgetPeriod.userId, userId), eq(budgetPeriod.periodKey, periodKey)));
-      return rows.map(toPeriod);
+        .from(categoryPeriodCap)
+        .where(
+          and(
+            eq(categoryPeriodCap.userId, userId),
+            eq(categoryPeriodCap.categoryId, categoryId),
+            lte(categoryPeriodCap.periodKey, periodKey),
+          ),
+        )
+        .orderBy(desc(categoryPeriodCap.periodKey))
+        .limit(1);
+      return row ? toPeriodCap(row) : null;
     },
 
-    async materialisePeriod(input: NewBudgetPeriodInput): Promise<BudgetPeriod> {
+    async findGoverningCaps(userId: UserId, periodKey: string): Promise<readonly PeriodCap[]> {
+      const rows = await x
+        .selectDistinctOn([categoryPeriodCap.categoryId])
+        .from(categoryPeriodCap)
+        .where(and(eq(categoryPeriodCap.userId, userId), lte(categoryPeriodCap.periodKey, periodKey)))
+        .orderBy(categoryPeriodCap.categoryId, desc(categoryPeriodCap.periodKey));
+      return rows.map(toPeriodCap);
+    },
+
+    async materialisePeriod(input: NewBudgetPeriodInput): Promise<StoredBudgetPeriod> {
       const inserted = await x
         .insert(budgetPeriod)
         .values({
@@ -120,7 +155,6 @@ function operations(x: DatabaseExecutor): BudgetReads & BudgetWrites {
           periodKey: input.periodKey,
           periodStart: input.periodStart,
           periodEnd: input.periodEnd,
-          capMinorUnits: input.capMinorUnits,
           createdAt: new Date(input.now),
         })
         .onConflictDoNothing({ target: [budgetPeriod.budgetId, budgetPeriod.periodKey] })
@@ -143,11 +177,7 @@ function operations(x: DatabaseExecutor): BudgetReads & BudgetWrites {
     async upsertActiveBudget(input: UpsertBudgetInput): Promise<Budget> {
       const updated = await x
         .update(budget)
-        .set({
-          capMinorUnits: input.capMinorUnits,
-          currencyCode: input.currencyCode,
-          updatedAt: new Date(input.now),
-        })
+        .set({ updatedAt: new Date(input.now) })
         .where(
           and(
             eq(budget.userId, input.userId),
@@ -164,8 +194,6 @@ function operations(x: DatabaseExecutor): BudgetReads & BudgetWrites {
         .values({
           userId: input.userId,
           categoryId: input.categoryId,
-          capMinorUnits: input.capMinorUnits,
-          currencyCode: input.currencyCode,
           isActive: true,
           createdAt: new Date(input.now),
           updatedAt: new Date(input.now),
@@ -175,17 +203,26 @@ function operations(x: DatabaseExecutor): BudgetReads & BudgetWrites {
       return toBudget(created);
     },
 
-    async updatePeriodCap(userId: UserId, budgetId: Id, periodKey: string, cap: MinorUnits): Promise<void> {
-      await x
-        .update(budgetPeriod)
-        .set({ capMinorUnits: cap })
-        .where(
-          and(
-            eq(budgetPeriod.userId, userId),
-            eq(budgetPeriod.budgetId, budgetId),
-            eq(budgetPeriod.periodKey, periodKey),
-          ),
-        );
+    async upsertPeriodCap(input: UpsertPeriodCapInput): Promise<PeriodCap> {
+      const now = new Date(input.now);
+      const [row] = await x
+        .insert(categoryPeriodCap)
+        .values({
+          userId: input.userId,
+          categoryId: input.categoryId,
+          periodKey: input.periodKey,
+          capMinorUnits: input.capMinorUnits,
+          currencyCode: input.currencyCode,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [categoryPeriodCap.categoryId, categoryPeriodCap.periodKey],
+          set: { capMinorUnits: input.capMinorUnits, currencyCode: input.currencyCode, updatedAt: now },
+        })
+        .returning();
+      if (!row) throw new Error('category_period_cap upsert returned no row');
+      return toPeriodCap(row);
     },
 
     async deactivateBudget(userId: UserId, budgetId: Id, now: Instant): Promise<boolean> {
@@ -219,20 +256,23 @@ export class DrizzleBudgetRepository implements BudgetRepository<DatabaseExecuto
   findBudget(userId: UserId, budgetId: Id): Promise<Budget | null> {
     return this.root.findBudget(userId, budgetId);
   }
-  findPeriod(userId: UserId, budgetId: Id, periodKey: string): Promise<BudgetPeriod | null> {
+  findPeriod(userId: UserId, budgetId: Id, periodKey: string): Promise<StoredBudgetPeriod | null> {
     return this.root.findPeriod(userId, budgetId, periodKey);
   }
-  findPeriodsByKey(userId: UserId, periodKey: string): Promise<readonly BudgetPeriod[]> {
-    return this.root.findPeriodsByKey(userId, periodKey);
+  findGoverningCap(userId: UserId, categoryId: Id, periodKey: string): Promise<PeriodCap | null> {
+    return this.root.findGoverningCap(userId, categoryId, periodKey);
   }
-  materialisePeriod(input: NewBudgetPeriodInput): Promise<BudgetPeriod> {
+  findGoverningCaps(userId: UserId, periodKey: string): Promise<readonly PeriodCap[]> {
+    return this.root.findGoverningCaps(userId, periodKey);
+  }
+  materialisePeriod(input: NewBudgetPeriodInput): Promise<StoredBudgetPeriod> {
     return this.root.materialisePeriod(input);
   }
   upsertActiveBudget(input: UpsertBudgetInput): Promise<Budget> {
     return this.root.upsertActiveBudget(input);
   }
-  updatePeriodCap(userId: UserId, budgetId: Id, periodKey: string, cap: MinorUnits): Promise<void> {
-    return this.root.updatePeriodCap(userId, budgetId, periodKey, cap);
+  upsertPeriodCap(input: UpsertPeriodCapInput): Promise<PeriodCap> {
+    return this.root.upsertPeriodCap(input);
   }
   deactivateBudget(userId: UserId, budgetId: Id, now: Instant): Promise<boolean> {
     return this.root.deactivateBudget(userId, budgetId, now);
