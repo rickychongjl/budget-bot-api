@@ -1,5 +1,5 @@
 import type { AllowanceSend } from '../../src/core/allowance';
-import type { Budget, BudgetPeriod } from '../../src/core/budgets';
+import type { Budget, PeriodCap, StoredBudgetPeriod } from '../../src/core/budgets';
 import type { Category, Transaction } from '../../src/core/ledger';
 import type { Id } from '../../src/core/shared/common';
 
@@ -23,7 +23,8 @@ export class InMemoryStore {
   categories: Category[] = [];
   transactions: Transaction[] = [];
   budgets: Budget[] = [];
-  periods: BudgetPeriod[] = [];
+  periods: StoredBudgetPeriod[] = [];
+  periodCaps: PeriodCap[] = [];
   allowanceSends: AllowanceSend[] = [];
   /**
    * `category.reminder_enabled`, held beside the rows rather than on them: M3's
@@ -39,6 +40,7 @@ export class InMemoryStore {
       transactions: [...this.transactions],
       budgets: [...this.budgets],
       periods: [...this.periods],
+      periodCaps: [...this.periodCaps],
       allowanceSends: [...this.allowanceSends],
       reminderEnabled: new Set(this.reminderEnabled),
     };
@@ -49,6 +51,7 @@ export class InMemoryStore {
     this.transactions = [...snapshot.transactions];
     this.budgets = [...snapshot.budgets];
     this.periods = [...snapshot.periods];
+    this.periodCaps = [...snapshot.periodCaps];
     this.allowanceSends = [...snapshot.allowanceSends];
     this.reminderEnabled = new Set(snapshot.reminderEnabled);
   }
@@ -69,7 +72,8 @@ export interface InMemoryStoreSnapshot {
   categories: readonly Category[];
   transactions: readonly Transaction[];
   budgets: readonly Budget[];
-  periods: readonly BudgetPeriod[];
+  periods: readonly StoredBudgetPeriod[];
+  periodCaps: readonly PeriodCap[];
   allowanceSends: readonly AllowanceSend[];
   reminderEnabled: ReadonlySet<Id>;
 }

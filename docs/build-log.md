@@ -1814,3 +1814,110 @@ anything this change modifies. No `db:generate`: no schema change; `updateTarget
   gap as `budget_period` itself. Also noted: `schema/budget.ts` says "superseded rows
   stay for their snapshots" but `upsertActiveBudget` updates in place, so that comment is
   stale whichever way this goes.
+
+## M4 — The cap moves to `category_period_cap` — 2026-09-12
+
+Ricky's call after the 11 Sep discussion of the backdating hole: rather than bolt a
+change log beside two existing cap columns, **remove the cap from `budget` and
+`budget_period` and keep it in one place, per category per cycle.** The "copy forward
+at rollover" he described is implemented as a lookup rather than a job: a cycle's cap is
+the `category_period_cap` row with the greatest `period_key` at or before it. Setting a
+cap writes the current cycle's row; every later cycle reads it until a later row
+supersedes it; every earlier cycle keeps the row that governed it. No cron, no catch-up
+logic, one `WHERE` clause.
+
+The hole it closes: a cycle nobody logged in, ran `/today` in, or was reminded in had
+no `budget_period` row, and opening it later — a backdated expense — snapshotted
+whatever the standing cap was *by then*. Set 1000 in July, raise to 1200 in September,
+backdate a dinner into August: August was recorded at 1200. Now it resolves to July's
+row. And before any row existed, the category had no cap — M3 records the transaction
+with a null `budget_period_id`, exactly as it does for an uncapped category.
+
+### Built
+
+- **`category_period_cap`** (`schema/budget.ts`): `(category_id, period_key)` unique,
+  `cap_minor_units` nullable — null is a removal, "no cap from this cycle on", so the
+  last cap cannot leak into cycles where the budget was gone. Keyed by category, not
+  budget, so history survives a budget being removed and re-added (each a new
+  `budget` row).
+- **`budget` and `budget_period` lose `cap_minor_units`** and their positive checks.
+  `Budget` carries no amount. `BudgetPeriod.capMinorUnits` and
+  `BudgetView.capMinorUnits` stay on the domain types — M5 and M7's contracts did not
+  move — but are **resolved from the history on every read**, never stored.
+  `BudgetView.snapshotCapMinorUnits` is gone; there is one figure.
+- **Repository:** `findGoverningCap` (`period_key <= ? order by period_key desc limit
+  1`), `findGoverningCaps` (`distinct on (category_id)`, same ordering — one query for
+  `/budget` and `/stats`), `upsertPeriodCap` (`on conflict do update`; two `/budget`
+  messages in one cycle leave one row). `updatePeriodCap` and `findPeriodsByKey` are
+  gone. `'YYYY-MM'` keys sort chronologically as text, so both reads are index scans.
+- **Service:** `materialise` resolves the cap *before* it writes a period and writes
+  none when nothing governs the cycle — a period row without a cap would be a
+  denominator of nothing. `ensurePeriodForCategory` returns null for such a cycle;
+  `ensurePeriod` refuses (`RESOURCE_NOT_FOUND`), because its callers ask for the
+  current cycle of an active budget, which always has one. `setCap` upserts the
+  current cycle's row; `deactivate` writes a null row for it. `currentBudgets` throws
+  — loudly, not a refusal — if an active budget has no governing cap, which is the
+  store contradicting itself.
+- **Migration `0007_category_period_cap`** — the one migration in the repository
+  that moves data. Drizzle-kit's `CREATE` / `DROP COLUMN` output, reordered so three
+  hand-written backfill `INSERT`s run while the old columns still exist: every
+  materialised cycle's snapshot becomes that cycle's row (the later budget winning a
+  shared cycle); a removed budget writes a null row for the cycle it was removed in;
+  an active budget's standing cap goes on the cycle it was last set in (`updated_at`)
+  and overrides that cycle's snapshot, as `setCap` does live. Period keys are derived
+  in SQL exactly as `period.ts` does — anchor day capped at 28, cycle labelled by its
+  start month, in the user's zone. `test/integration/migration-0007-category-period-cap.test.ts`
+  seeds the *old* shape on PGlite, runs `0007`, and pins every resulting row.
+  `drizzle-kit generate` reports no drift afterwards.
+- **Consumers:** `/budget`, `/stats`, `/categories` and M2's account summary read
+  caps through `currentBudgets` (the summary skips it before onboarding step 3 —
+  no anchor, no budgets). `/budget <category> <amount>` uses the parsed amount for its
+  headline. `FakeBudgets` in M2's tests keeps a cap map beside its rows.
+
+### Decisions taken (Ricky, 12 Sep)
+
+- Single source of truth for the cap: one table, per category per cycle. Cap columns
+  removed from `budget` and `budget_period`, not left in parallel.
+- Carry-forward by lookup ("latest cycle at or before"), not by a rollover job. M4's
+  standing "no cron" decision holds; this extends it to caps.
+- A removal is a null row, not the absence of one, so re-adding a budget later never
+  resurrects an old cap for the cycles in between.
+
+### Fixed in passing
+
+- `schema/budget.ts` said "superseded rows stay for their snapshots" of `budget`,
+  which `upsertActiveBudget` (an in-place `UPDATE`) never did. Rewritten to what the
+  partial index actually serves: a removed budget stays, inactive, for its periods.
+- M3's invariant "a confirmed transaction with a category that has an active budget
+  always has a `budget_period_id`" is now qualified: when its date falls in a cycle
+  that budget carried a cap in. Two M3 unit tests that backdated into August with a
+  cap set in September were asserting the old stamping; they now set the cap in
+  August first, and a third pins the new behaviour at M3's seam.
+
+### Verification
+
+`npx tsc --noEmit` — clean, 0 errors.
+
+`npx vitest run` — **652 passed / 9 skipped** across 48 files. Net +15 tests: M4 unit
++10 (governing rows, the August case, two changes in one cycle, removal rows,
+re-adding in a later cycle, the loud invariant); `ledger-budgets` integration +3 (the
+real `<=`/`distinct on` queries on PGlite, the upsert's unique constraint, the null
+row); a new 4-test suite for the `0007` backfill on old-shape rows; M3 unit +1. **The 9
+skipped are `test/integration/identity.test.ts` and `test/integration/entitlements.test.ts`,
+gated on `DATABASE_URL`, which this environment does not have — not executed.**
+Neither touches M4.
+
+`npx drizzle-kit generate` after the change — no diff; the committed SQL matches the
+schema.
+
+### Open questions
+
+- **`budget.currency_code`** now sits on a row with no amount. It denominates every
+  cap for the category and M2 fixes the account currency once anything is logged, so
+  it is coherent but faintly odd. Left where it is: moving it widens the change for no
+  behaviour. Revisit if `budget` ever loses another column.
+- **`gateway.test.ts`** still builds its PGlite schema from `0003` + `0005` only, so it
+  sees the pre-`0007` `budget` shape. It never touches budgets, so this is harmless, but
+  every integration suite would be better off applying the full journal in order. Not
+  changed here — CLAUDE.md, "do not combine broad structural refactoring with an
+  unrelated feature change".

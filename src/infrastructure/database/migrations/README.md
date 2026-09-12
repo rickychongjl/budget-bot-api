@@ -10,7 +10,11 @@ coordinated M3+M4 migration carrying their cross-FK tables (`category` ↔ `budg
 `transaction` ↔ `budget_period`) — see master plan §4. `transaction.category_name_snapshot`
 was proposed in M3's plan for the deferred "real category removal" feature and
 deliberately **not** included (confirmed 8 Sep); it arrives with the feature that
-needs it.
+needs it. `0007` is M4's cap history (`category_period_cap`, 12 Sep): the one
+migration here that **moves data** — its three backfill `INSERT`s are hand-written
+between drizzle-kit's `CREATE` and `DROP COLUMN` statements, and
+`test/integration/migration-0007-category-period-cap.test.ts` pins what they do to
+old-shape rows.
 
 Flow:
 1. A module edits its own `src/infrastructure/database/schema/<module>.ts` and the

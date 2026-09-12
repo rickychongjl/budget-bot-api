@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import identityDdl from '../../src/infrastructure/database/migrations/0000_identity.sql?raw';
 import ledgerDdl from '../../src/infrastructure/database/migrations/0003_flashy_true_believers.sql?raw';
 import allowanceDdl from '../../src/infrastructure/database/migrations/0004_faithful_baron_zemo.sql?raw';
+import capsDdl from '../../src/infrastructure/database/migrations/0007_category_period_cap.sql?raw';
 import type { Database } from '../../src/infrastructure/database/client';
 import { DrizzleAllowanceRepository } from '../../src/infrastructure/database/repositories/drizzle-allowance-repository';
 
@@ -35,6 +36,7 @@ beforeAll(async () => {
   await pg.exec(identityDdl);
   await pg.exec(ledgerDdl);
   await pg.exec(allowanceDdl);
+  await pg.exec(capsDdl);
   db = drizzle(pg) as unknown as Database;
   repository = new DrizzleAllowanceRepository(db);
 });
@@ -79,12 +81,16 @@ async function seedCategory(
     values (${categoryId}, ${userId}, 'Food', ${categoryId}, ${opts.reminder ?? true})
   `);
   await db.execute(sql`
-    insert into budget (id, user_id, category_id, cap_minor_units, currency_code)
-    values (${budgetId}, ${userId}, ${categoryId}, 50000, 'AUD')
+    insert into budget (id, user_id, category_id, currency_code)
+    values (${budgetId}, ${userId}, ${categoryId}, 'AUD')
   `);
   await db.execute(sql`
-    insert into budget_period (id, user_id, budget_id, period_key, period_start, period_end, cap_minor_units)
-    values (${periodId}, ${userId}, ${budgetId}, '2026-09', '2026-09-05', '2026-10-04', 50000)
+    insert into category_period_cap (user_id, category_id, period_key, cap_minor_units)
+    values (${userId}, ${categoryId}, '2026-09', 50000)
+  `);
+  await db.execute(sql`
+    insert into budget_period (id, user_id, budget_id, period_key, period_start, period_end)
+    values (${periodId}, ${userId}, ${budgetId}, '2026-09', '2026-09-05', '2026-10-04')
   `);
   return { categoryId, periodId };
 }

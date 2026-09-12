@@ -52,7 +52,7 @@ export const statsCommand: CommandHandler = {
     const lines: StatsLine[] = await Promise.all(
       selected.map(async (view) => ({
         name: labelOf(view.budget.categoryId, names),
-        capMinorUnits: view.snapshotCapMinorUnits ?? view.budget.capMinorUnits,
+        capMinorUnits: view.capMinorUnits,
         spentMinorUnits: await spendOf(context, userId, view.budget.id, localDate),
       })),
     );

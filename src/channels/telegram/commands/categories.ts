@@ -2,7 +2,7 @@ import { RefusalError } from '../../../core/shared/errors';
 import type { CommandHandler } from '../command-router';
 import type { CategoryLine } from '../render';
 import { CATEGORY_USAGE, renderCategoryList } from '../render';
-import { requireCategory } from './context';
+import { requireCategory, today } from './context';
 
 /**
  * `/categories` — list, add, rename, archive (M3).
@@ -70,17 +70,19 @@ async function list(
   context: Parameters<CommandHandler['handle']>[0],
   userId: string,
 ): Promise<string> {
-  const [settings, categories, budgets, reminders] = await Promise.all([
+  // Caps are per cycle (M4), so the list needs the user's today to know which cycle.
+  const localDate = await today(context, userId);
+  const [settings, categories, views, reminders] = await Promise.all([
     context.services.identity.getSettings(userId),
     context.services.categories.list(userId),
-    context.services.budgets.activeBudgets(userId),
+    context.services.budgets.currentBudgets(userId, localDate),
     context.services.reminders.enabledCategoryIds(userId),
   ]);
 
   const capOf = new Map(
-    budgets
-      .filter((budget) => budget.categoryId !== null)
-      .map((budget) => [budget.categoryId as string, budget.capMinorUnits]),
+    views
+      .filter((view) => view.budget.categoryId !== null)
+      .map((view) => [view.budget.categoryId as string, view.capMinorUnits]),
   );
   const reminding = new Set(reminders);
 

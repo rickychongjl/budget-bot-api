@@ -3,8 +3,9 @@
  *
  * Implements `BudgetService` (`./budget-service.ts`) against
  * `infrastructure/database/schema/budget.ts`. Owns monthly period derivation from
- * `period_anchor_date`, lazy period materialisation, the `budget` / `budget_period`
- * split, `/budget`. Period maths lives in `./period.ts` as a pure, clock-injected
+ * `period_anchor_date`, lazy period materialisation, the cap history in
+ * `category_period_cap` (a period's cap is the row with the greatest key at or before
+ * it), `/budget`. Period maths lives in `./period.ts` as a pure, clock-injected
  * function.
  *
  * Public surface: the contract, its implementation, and the pure period maths.
@@ -29,6 +30,7 @@ export type {
   BudgetUserSettings,
   BudgetView,
   Period,
+  PeriodCap,
   PeriodMaterialiser,
 } from './budget-service';
 
@@ -37,7 +39,9 @@ export type {
   BudgetRepository,
   BudgetWrites,
   NewBudgetPeriodInput,
+  StoredBudgetPeriod,
   UpsertBudgetInput,
+  UpsertPeriodCapInput,
 } from './budget-repository';
 
 export { DefaultBudgetService } from './default-budget-service';
