@@ -52,7 +52,7 @@ and cycle, and a cycle's cap is the row with the greatest key at or before it. S
 ---
 
 ## Where the cap lives — three tables (restructured 12 Sep)
-`budget` is the **standing rule** — this category is budgeted. `budget_period` is a **materialised cycle** — the period a transaction or a daily target hangs off. Neither carries an amount. `category_period_cap` is the **cap history**: a row says "from cycle `period_key` on, this category's cap is `cap_minor_units`", and **a cycle's cap is the row with the greatest key at or before it.**
+`budget` is the **standing rule** — this category is budgeted. `budget_period` is a **materialised cycle** — the period a transaction or a daily target hangs off. Neither carries an amount, nor a currency. `category_period_cap` is the **cap history**: a row says "from cycle `period_key` on, this category's cap is `cap_minor_units`", and **a cycle's cap is the row with the greatest key at or before it.**
 
 The original design snapshotted the cap onto `budget_period` at materialisation so a September raise could not rewrite August. It did that job — but only for cycles something had touched. A cycle nobody logged in, ran `/today` in, or was reminded in had no row, and opening it later (a backdated expense) stamped whatever the standing cap was *by then*. Ricky's call, 12 Sep: keep a per-category, per-cycle cap in one place and derive everything else. Under the lookup:
 
@@ -70,7 +70,6 @@ create table budget (
   id               uuid primary key default gen_random_uuid(),
   user_id          uuid not null references app_user(id) on delete cascade,
   category_id      uuid references category(id) on delete set null,
-  currency_code    char(3) not null,        -- every cap for the category is in this
   is_active        boolean not null default true,
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now()
@@ -97,13 +96,15 @@ create table category_period_cap (
   period_key       text not null,           -- the cycle this row takes effect from
   cap_minor_units  bigint check (cap_minor_units is null or cap_minor_units > 0),
                                             -- null: removed in this cycle, no cap from here on
+  currency_code    char(3) not null,        -- what the cap is in: the account's currency when
+                                            -- the row was written (M3's transaction precedent)
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now(),
   unique (category_id, period_key)
 );
 create index category_period_cap_user_key on category_period_cap (user_id, period_key);
 ```
-The governing row for a cycle: `where category_id = ? and period_key <= ? order by period_key desc limit 1`. For every category at once: `distinct on (category_id)` with the same ordering. `'YYYY-MM'` keys sort chronologically as text, so both are index scans. Migration `0007` created the table and **backfilled it from the old columns** (snapshots → cycle rows; removed budgets → null rows; active standing caps → the cycle they were last set in) before dropping them; `test/integration/migration-0007-category-period-cap.test.ts` pins that.
+The governing row for a cycle: `where category_id = ? and period_key <= ? order by period_key desc limit 1`. For every category at once: `distinct on (category_id)` with the same ordering. `'YYYY-MM'` keys sort chronologically as text, so both are index scans. Migration `0007` created the table and **backfilled it from the old columns** (snapshots → cycle rows; removed budgets → null rows; active standing caps → the cycle they were last set in) before dropping them; `test/integration/migration-0007-category-period-cap.test.ts` pins that. Migration `0008` then moved `currency_code` from `budget` onto the cap rows — an amount and its denomination on one row, as `transaction` does — backfilling each category's rows from its live budget (else its last removed one, else the account) before dropping the column; `migration-0008-currency-on-cap.test.ts` pins that.
 
 ## Period derivation — monthly only
 

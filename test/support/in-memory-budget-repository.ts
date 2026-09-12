@@ -97,7 +97,7 @@ export class InMemoryBudgetRepository implements BudgetRepository<InMemoryStore>
     );
     const existing = this.store.budgets[index];
     if (existing) {
-      const updated: Budget = { ...existing, currencyCode: input.currencyCode, updatedAt: input.now };
+      const updated: Budget = { ...existing, updatedAt: input.now };
       this.store.budgets[index] = updated;
       return updated;
     }
@@ -105,7 +105,6 @@ export class InMemoryBudgetRepository implements BudgetRepository<InMemoryStore>
       id: fakeId('budget'),
       userId: input.userId,
       categoryId: input.categoryId,
-      currencyCode: input.currencyCode,
       isActive: true,
       createdAt: input.now,
       updatedAt: input.now,
@@ -120,7 +119,12 @@ export class InMemoryBudgetRepository implements BudgetRepository<InMemoryStore>
     );
     const existing = this.store.periodCaps[index];
     if (existing) {
-      const updated: PeriodCap = { ...existing, capMinorUnits: input.capMinorUnits, updatedAt: input.now };
+      const updated: PeriodCap = {
+        ...existing,
+        capMinorUnits: input.capMinorUnits,
+        currencyCode: input.currencyCode,
+        updatedAt: input.now,
+      };
       this.store.periodCaps[index] = updated;
       return updated;
     }
@@ -129,6 +133,7 @@ export class InMemoryBudgetRepository implements BudgetRepository<InMemoryStore>
       categoryId: input.categoryId,
       periodKey: input.periodKey,
       capMinorUnits: input.capMinorUnits,
+      currencyCode: input.currencyCode,
       createdAt: input.now,
       updatedAt: input.now,
     };

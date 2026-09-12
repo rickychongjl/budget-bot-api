@@ -1921,3 +1921,62 @@ schema.
   every integration suite would be better off applying the full journal in order. Not
   changed here — CLAUDE.md, "do not combine broad structural refactoring with an
   unrelated feature change".
+
+## M4 / tests — `currency_code` follows the cap; PGlite suites follow the journal — 2026-09-12
+
+The two open questions from the entry above, taken as their own change each (CLAUDE.md,
+"do not combine broad structural refactoring with an unrelated feature change"). Two
+commits, no behaviour change to any command.
+
+### Built
+
+- **`test/support/pglite-migrations.ts`** — `applyMigrations(pg)` reads
+  `meta/_journal.json` and applies every committed `.sql` in `idx` order, the same files
+  `db:migrate` runs; `{ through }` stops after a tag and `applyMigration(pg, tag)` runs
+  one, for the suites that seed an old shape first. Both directions of drift fail at
+  load: a journal entry with no file, a file the journal does not list. The `.sql`
+  files arrive through `import.meta.glob(…, { query: '?raw' })`, typed in
+  `test/sql-modules.d.ts` to that one shape rather than by pulling `vite/client` in
+  beside `@cloudflare/workers-types`.
+- **Every PGlite suite** now builds from it: `gateway` (was `0000`+`0003`+`0002`+`0005`,
+  so it ran on the pre-`0007` `budget`), `ledger-budgets`, `allowance`, the `0007`
+  backfill suite (`through: '0006_…'`, seed, then `0007`), and `parse-event-fk`, which
+  had carried a hand-copied DDL block with a stub `app_user` verified against
+  drizzle-kit once, on 6 Sep. Its insert of `app_user (timezone)` works unchanged
+  against the real table: every other column has a default.
+- **`currency_code` moves from `budget` to `category_period_cap`** (`0008_currency_on_cap`).
+  An amount and what it is denominated in now sit on one row, the precedent M3 set with
+  `transaction.currency_code` ("copied onto each row, not joined from the user, so
+  history still renders correctly if the default currency ever changes"). `budget` says
+  only "this category is budgeted". A removal row carries the currency too, so the
+  column is never null. `Budget` loses `currencyCode`; `PeriodCap` and
+  `UpsertPeriodCapInput` gain it; `UpsertBudgetInput` loses it; `setCap` and
+  `deactivate` pass `settings.currencyCode` through to the cap write. Nothing rendered
+  it from `Budget` — M7 formats money with `settings.currencyCode` — so no command
+  output changes.
+- **Migration `0008`** is drizzle-kit's two statements reordered by hand around a
+  backfill, as `0007` was: add the column nullable, `UPDATE` each cap row from its
+  category's live budget (else its most recently updated removed one, else the
+  account's currency — a row with no budget at all cannot come from the service, but
+  the `COALESCE` costs nothing), then `SET NOT NULL` and drop from `budget`.
+  `test/integration/migration-0008-currency-on-cap.test.ts` seeds the `0007` shape and
+  pins all three branches plus the final column state. `drizzle-kit generate` reports
+  no drift.
+
+### Not done, deliberately
+
+- `BudgetView` and `BudgetPeriod` do not surface the cap's currency. Their consumers
+  format with the account currency, which M2 fixes once anything is logged; adding a
+  field nobody reads would be the same faint oddity moved one layer up.
+
+### Verification
+
+`npx tsc --noEmit` — clean.
+
+`npx vitest run` — **656 passed / 9 skipped** across 49 files (+4: the `0008` suite).
+**The 9 skipped are `identity.test.ts` and `entitlements.test.ts`, gated on
+`DATABASE_URL`, which this environment does not have — not executed.** Neither
+touches M4's tables or the PGlite helper.
+
+`npx drizzle-kit generate` after the schema change — "No schema changes, nothing to
+migrate".

@@ -195,7 +195,7 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
     expect(
       await constraintViolatedBy(
         pg.query(
-          `insert into category_period_cap (user_id, category_id, period_key, cap_minor_units) values ($1, $2, '2026-10', 0)`,
+          `insert into category_period_cap (user_id, category_id, period_key, cap_minor_units, currency_code) values ($1, $2, '2026-10', 0, 'AUD')`,
           [userId, category.id],
         ),
       ),
@@ -217,7 +217,7 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
     expect(
       await constraintViolatedBy(
         pg.query(
-          `insert into category_period_cap (user_id, category_id, period_key, cap_minor_units) values ($1, $2, '2026-09', 500)`,
+          `insert into category_period_cap (user_id, category_id, period_key, cap_minor_units, currency_code) values ($1, $2, '2026-09', 500, 'AUD')`,
           [userId, category.id],
         ),
       ),
@@ -236,7 +236,7 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
     expect(
       await constraintViolatedBy(
         pg.query(
-          `insert into budget (user_id, category_id, currency_code) values ($1, $2, 'AUD')`,
+          `insert into budget (user_id, category_id) values ($1, $2)`,
           [userId, category.id],
         ),
       ),

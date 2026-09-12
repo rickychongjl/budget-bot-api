@@ -36,7 +36,6 @@ export interface NewBudgetPeriodInput {
 export interface UpsertBudgetInput {
   userId: UserId;
   categoryId: Id;
-  currencyCode: CurrencyCode;
   now: Instant;
 }
 
@@ -46,6 +45,7 @@ export interface UpsertPeriodCapInput {
   periodKey: string;
   /** Null records a removal: no cap from this cycle on. */
   capMinorUnits: MinorUnits | null;
+  currencyCode: CurrencyCode;
   now: Instant;
 }
 

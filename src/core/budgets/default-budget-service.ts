@@ -213,18 +213,21 @@ export class DefaultBudgetService<X> implements BudgetService, PeriodMaterialise
     const anchorDate = anchorOf(settings);
     const now = this.clock.now();
 
-    const budget = await this.repository.upsertActiveBudget({
-      userId,
-      categoryId,
-      currencyCode: settings.currencyCode,
-      now,
-    });
+    const budget = await this.repository.upsertActiveBudget({ userId, categoryId, now });
 
     // Only the current cycle's row is ever written; an earlier cycle's governing row
     // stays byte-for-byte as it was, so historical allowance figures cannot shift under
-    // the user.
+    // the user. The cap is denominated in the account's currency as of now — M2 fixes
+    // that once anything is logged, and the row records it either way.
     const current = periodFor(localDateAt(now, settings.timezone), anchorDate);
-    await this.repository.upsertPeriodCap({ userId, categoryId, periodKey: current.key, capMinorUnits: cap, now });
+    await this.repository.upsertPeriodCap({
+      userId,
+      categoryId,
+      periodKey: current.key,
+      capMinorUnits: cap,
+      currencyCode: settings.currencyCode,
+      now,
+    });
 
     // A day's target row references its period, so one can only exist once the period
     // does — no period row yet, nothing for M5 to re-price.
@@ -262,6 +265,7 @@ export class DefaultBudgetService<X> implements BudgetService, PeriodMaterialise
       categoryId: budget.categoryId,
       periodKey: current.key,
       capMinorUnits: null,
+      currencyCode: settings.currencyCode,
       now,
     });
   }

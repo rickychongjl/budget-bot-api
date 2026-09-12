@@ -46,7 +46,6 @@ function toBudget(row: BudgetRow): Budget {
     id: row.id,
     userId: row.userId,
     categoryId: row.categoryId,
-    currencyCode: row.currencyCode,
     isActive: row.isActive,
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
@@ -71,6 +70,7 @@ function toPeriodCap(row: PeriodCapRow): PeriodCap {
     categoryId: row.categoryId,
     periodKey: row.periodKey,
     capMinorUnits: row.capMinorUnits,
+    currencyCode: row.currencyCode,
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
   };
@@ -177,10 +177,7 @@ function operations(x: DatabaseExecutor): BudgetReads & BudgetWrites {
     async upsertActiveBudget(input: UpsertBudgetInput): Promise<Budget> {
       const updated = await x
         .update(budget)
-        .set({
-          currencyCode: input.currencyCode,
-          updatedAt: new Date(input.now),
-        })
+        .set({ updatedAt: new Date(input.now) })
         .where(
           and(
             eq(budget.userId, input.userId),
@@ -197,7 +194,6 @@ function operations(x: DatabaseExecutor): BudgetReads & BudgetWrites {
         .values({
           userId: input.userId,
           categoryId: input.categoryId,
-          currencyCode: input.currencyCode,
           isActive: true,
           createdAt: new Date(input.now),
           updatedAt: new Date(input.now),
@@ -216,12 +212,13 @@ function operations(x: DatabaseExecutor): BudgetReads & BudgetWrites {
           categoryId: input.categoryId,
           periodKey: input.periodKey,
           capMinorUnits: input.capMinorUnits,
+          currencyCode: input.currencyCode,
           createdAt: now,
           updatedAt: now,
         })
         .onConflictDoUpdate({
           target: [categoryPeriodCap.categoryId, categoryPeriodCap.periodKey],
-          set: { capMinorUnits: input.capMinorUnits, updatedAt: now },
+          set: { capMinorUnits: input.capMinorUnits, currencyCode: input.currencyCode, updatedAt: now },
         })
         .returning();
       if (!row) throw new Error('category_period_cap upsert returned no row');

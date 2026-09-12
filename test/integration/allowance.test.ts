@@ -76,12 +76,12 @@ async function seedCategory(
     values (${categoryId}, ${userId}, 'Food', ${categoryId}, ${opts.reminder ?? true})
   `);
   await db.execute(sql`
-    insert into budget (id, user_id, category_id, currency_code)
-    values (${budgetId}, ${userId}, ${categoryId}, 'AUD')
+    insert into budget (id, user_id, category_id)
+    values (${budgetId}, ${userId}, ${categoryId})
   `);
   await db.execute(sql`
-    insert into category_period_cap (user_id, category_id, period_key, cap_minor_units)
-    values (${userId}, ${categoryId}, '2026-09', 50000)
+    insert into category_period_cap (user_id, category_id, period_key, cap_minor_units, currency_code)
+    values (${userId}, ${categoryId}, '2026-09', 50000, 'AUD')
   `);
   await db.execute(sql`
     insert into budget_period (id, user_id, budget_id, period_key, period_start, period_end)

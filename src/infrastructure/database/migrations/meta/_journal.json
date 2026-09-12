@@ -57,6 +57,13 @@
       "when": 1789174254142,
       "tag": "0007_category_period_cap",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789179251776,
+      "tag": "0008_currency_on_cap",
+      "breakpoints": true
     }
   ]
 }

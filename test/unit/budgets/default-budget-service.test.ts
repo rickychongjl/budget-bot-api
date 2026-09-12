@@ -180,9 +180,10 @@ describe('setCap', () => {
     await expect(budgets.setCap(USER, GROCERIES, -1n)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
   });
 
-  it('denominates the cap in the user"s currency', async () => {
+  it('denominates the cap row in the user"s currency', async () => {
     settings = { ...settings, currencyCode: 'NZD' };
-    expect((await budgets.setCap(USER, GROCERIES, 60_000n)).currencyCode).toBe('NZD');
+    await budgets.setCap(USER, GROCERIES, 60_000n);
+    expect(store.periodCaps).toEqual([expect.objectContaining({ capMinorUnits: 60_000n, currencyCode: 'NZD' })]);
   });
 
   /** 5 Sep decision: budgets are independent of which categories carry a reminder. */

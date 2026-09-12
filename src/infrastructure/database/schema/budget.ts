@@ -20,7 +20,8 @@ import { appUser } from './identity';
  * M4 — Budgets & Periods owns this file.
  *
  * Tables: `budget` (a category is budgeted), `budget_period` (a materialised cycle),
- * `category_period_cap` (**the only place a cap amount lives** — Ricky, 12 Sep 2026).
+ * `category_period_cap` (**the only place a cap amount lives** — Ricky, 12 Sep 2026 —
+ * and, since 0008, the only place its currency lives).
  *
  * The cap moved out of `budget` and `budget_period` because a cap stored per
  * *materialised* period could only ever be right for periods something had touched: a
@@ -60,8 +61,6 @@ export const budget = pgTable(
       .references(() => appUser.id, { onDelete: 'cascade' }),
     /** Nulled rather than deleted if the category ever goes away; history survives. */
     categoryId: uuid('category_id').references(() => category.id, { onDelete: 'set null' }),
-    /** The currency every cap for this category is denominated in — the account's. */
-    currencyCode: char('currency_code', { length: 3 }).notNull(),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -122,6 +121,13 @@ export const categoryPeriodCap = pgTable(
     periodKey: text('period_key').notNull(),
     /** Null means the budget was removed in this cycle: no cap from here on. */
     capMinorUnits: bigint('cap_minor_units', { mode: 'bigint' }),
+    /**
+     * What `cap_minor_units` is denominated in — the account's currency when the row
+     * was written, copied here rather than joined from `app_user`, the precedent M3 set
+     * for `transaction.currency_code`. Lived on `budget` until 0008; it belongs beside
+     * the amount. Written on a removal row too, so the column is never null.
+     */
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

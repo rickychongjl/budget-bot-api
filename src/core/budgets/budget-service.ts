@@ -47,15 +47,14 @@ export interface BudgetPeriod {
 
 /**
  * The standing rule — this category is budgeted. **The amount is not here** (Ricky,
- * 12 Sep 2026); it lives per cycle in `category_period_cap`, read through
- * `currentBudgets` or a `BudgetPeriod`. This row is what M5/M8 count and what a
- * `budget_period` hangs off.
+ * 12 Sep 2026), nor its currency; both live per cycle in `category_period_cap`, read
+ * through `currentBudgets` or a `BudgetPeriod`. This row is what M5/M8 count and what
+ * a `budget_period` hangs off.
  */
 export interface Budget {
   id: Id;
   userId: UserId;
   categoryId: Id | null;
-  currencyCode: CurrencyCode;
   isActive: boolean;
   createdAt: Instant;
   updatedAt: Instant;
@@ -71,6 +70,8 @@ export interface PeriodCap {
   categoryId: Id;
   periodKey: string;
   capMinorUnits: MinorUnits | null;
+  /** What the cap is denominated in — the account's currency when the row was written. */
+  currencyCode: CurrencyCode;
   createdAt: Instant;
   updatedAt: Instant;
 }

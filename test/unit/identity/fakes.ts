@@ -215,7 +215,6 @@ export class FakeBudgets implements BudgetService {
       id: `bud-${++this.#seq}`,
       userId,
       categoryId,
-      currencyCode: 'AUD',
       isActive: true,
       createdAt: 0,
       updatedAt: 0,
