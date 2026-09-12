@@ -236,16 +236,10 @@ export interface BudgetLine {
 }
 
 /**
- * `/budget` with no arguments shows the **current-period snapshot** (M4, confirmed
- * 5 Sep).
- *
- * M4's page adds "only differs from the standing rule right after a mid-period change,
- * in which case show both" — but its implementation makes that unreachable:
- * `setCap` updates the standing budget *and* the materialised snapshot for the current
- * cycle in the same call (`default-budget-service.ts:168-174`), precisely so the user's
- * "my budget is 300 now" means now. There is therefore no second figure to show, and a
- * branch rendering one would be dead code pretending to be a feature. The caller
- * resolves snapshot-or-standing before calling; this renders the one number.
+ * `/budget` with no arguments shows one figure per category: the cap governing the
+ * current cycle, which M4 resolves from its history (12 Sep). There is no second
+ * "standing" figure to show — `setCap` writes the current cycle's row, so "my budget
+ * is 300 now" means now. The handler passes the resolved number; this renders it.
  */
 export function renderBudgetList(
   lines: readonly BudgetLine[],

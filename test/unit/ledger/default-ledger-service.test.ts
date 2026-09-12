@@ -84,7 +84,11 @@ describe('record', () => {
   });
 
   it('buckets a backdated entry into the period that owns its date, not today"s', async () => {
+    // The cap has to have governed August for August to have a period (M4, 12 Sep):
+    // set it while August is the current cycle, then come back to today.
+    h.clock.set('2026-08-01T02:00:00Z');
     const food = await budgeted('Food');
+    h.clock.set('2026-09-10T02:00:00Z');
     const august = await h.ledger.record(
       USER,
       candidate({ categoryId: food.id, occurredOn: '2026-08-20', occurredAt: sydneyNoon('2026-08-20') }),
@@ -93,6 +97,19 @@ describe('record', () => {
 
     expect(august.budgetPeriodId).not.toBe(september.budgetPeriodId);
     expect(h.store.periods.find((p) => p.id === august.budgetPeriodId)?.periodKey).toBe('2026-08');
+  });
+
+  it('records a backdated entry into a cycle before the budget existed with no period — uncapped then', async () => {
+    // The August case (Ricky, 11–12 Sep): cap set in September, dinner backdated to
+    // August. M4 used to open August at September's cap; now August had no cap, so the
+    // entry is recorded like any uncapped expense and never counts against a cap.
+    const food = await budgeted('Food'); // today is 10 Sep: September's row only
+    const august = await h.ledger.record(
+      USER,
+      candidate({ categoryId: food.id, occurredOn: '2026-08-20', occurredAt: sydneyNoon('2026-08-20') }),
+    );
+    expect(august.budgetPeriodId).toBeNull();
+    expect(h.store.periods).toHaveLength(0);
   });
 
   /** Confirmed round 3: the floor is the account creation date. */
@@ -229,7 +246,9 @@ describe('spendInPeriod / spentOn — netting', () => {
 
 describe('correct', () => {
   it('re-buckets the transaction when the date moves to another period', async () => {
+    h.clock.set('2026-08-01T02:00:00Z');
     const food = await budgeted('Food');
+    h.clock.set('2026-09-10T02:00:00Z');
     const tx = await h.ledger.record(USER, candidate({ categoryId: food.id }));
 
     const corrected = await h.ledger.correct(USER, tx.id, { occurredOn: '2026-08-20' });

@@ -25,9 +25,9 @@ describe('/budget', () => {
 
     expect(await reply(h, '/budget Food 300')).toContain('$300');
 
-    const [budget] = await h.budgets.activeBudgets(USER);
-    expect(budget?.categoryId).toBe(food);
-    expect(budget?.capMinorUnits).toBe(30000n);
+    const [view] = await h.budgets.currentBudgets(USER, '2026-09-11');
+    expect(view?.budget.categoryId).toBe(food);
+    expect(view?.capMinorUnits).toBe(30000n);
   });
 
   it('keeps a quoted multi-word name together', async () => {
@@ -41,8 +41,8 @@ describe('/budget', () => {
 
     await reply(h, '/budget Food 12.50');
 
-    const [budget] = await h.budgets.activeBudgets(USER);
-    expect(budget?.capMinorUnits).toBe(1250n);
+    const [view] = await h.budgets.currentBudgets(USER, '2026-09-11');
+    expect(view?.capMinorUnits).toBe(1250n);
   });
 
   it('writes nothing when the amount is malformed', async () => {
@@ -83,7 +83,9 @@ describe('/budget', () => {
       'Food is now $960 a cycle. You can spend $40 on Food today to stay on budget.',
     );
     expect(await reply(h, '/today')).toBe('You can spend $40 on Food today to stay on budget.');
-    expect(await h.budgets.activeBudgets(USER)).toMatchObject([{ categoryId: food, capMinorUnits: 96000n }]);
+    expect(await h.budgets.currentBudgets(USER, '2026-09-11')).toMatchObject([
+      { budget: { categoryId: food }, capMinorUnits: 96000n },
+    ]);
   });
 
   it('shows one figure after a mid-cycle change, because M4 moves the snapshot too', async () => {
