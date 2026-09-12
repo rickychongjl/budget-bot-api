@@ -10,7 +10,7 @@ import type {
   NewAllowanceSendInput,
   ReminderCategory,
 } from '../../../core/allowance/allowance-repository';
-import type { Id, Instant, LocalDate, UserId } from '../../../core/shared/common';
+import type { Id, Instant, LocalDate, MinorUnits, UserId } from '../../../core/shared/common';
 import type { Database } from '../client';
 import { dailyAllowanceSend } from '../schema/allowance';
 import { budget } from '../schema/budget';
@@ -277,6 +277,26 @@ function operations(x: DatabaseExecutor): AllowanceReads & AllowanceWrites {
       return rows.reduce((max, r) => Math.max(max, r.attempts), 0);
     },
 
+    async updateTarget(
+      userId: UserId,
+      categoryId: Id,
+      localDate: LocalDate,
+      dailyTarget: MinorUnits,
+    ): Promise<void> {
+      // Only the target column moves. `delivery_status`, `attempts` and `sent_at` are
+      // the delivery record and stay as they are — this is a re-price, not a re-send.
+      await x
+        .update(dailyAllowanceSend)
+        .set({ dailyTargetMinorUnits: dailyTarget })
+        .where(
+          and(
+            eq(dailyAllowanceSend.userId, userId),
+            eq(dailyAllowanceSend.categoryId, categoryId),
+            eq(dailyAllowanceSend.localDate, localDate),
+          ),
+        );
+    },
+
     async setReminderEnabled(userId: UserId, categoryId: Id, enabled: boolean): Promise<void> {
       await x
         .update(category)
@@ -323,6 +343,14 @@ export class DrizzleAllowanceRepository implements AllowanceRepository<DatabaseE
   }
   incrementAttempts(ids: readonly Id[]): Promise<number> {
     return this.root.incrementAttempts(ids);
+  }
+  updateTarget(
+    userId: UserId,
+    categoryId: Id,
+    localDate: LocalDate,
+    dailyTarget: MinorUnits,
+  ): Promise<void> {
+    return this.root.updateTarget(userId, categoryId, localDate, dailyTarget);
   }
   setReminderEnabled(userId: UserId, categoryId: Id, enabled: boolean): Promise<void> {
     return this.root.setReminderEnabled(userId, categoryId, enabled);

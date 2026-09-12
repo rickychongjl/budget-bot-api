@@ -1,5 +1,6 @@
 import type { CurrencyCode, MinorUnits } from '../shared/common';
 import { formatMinorUnits } from '../shared/money';
+import { sanitiseDisplayText } from '../shared/text';
 import type { AllowanceView } from './allowance-service';
 
 /**
@@ -17,16 +18,14 @@ import type { AllowanceView } from './allowance-service';
 const MAX_CATEGORY_NAME = 40;
 
 /**
- * Strip anything that could read as Telegram markup or a control character. The same
- * rule as M2's private `escapeForPrompt`; deliberately duplicated rather than hoisted
- * to `core/shared` in this PR, because CLAUDE.md says not to fold a rename sweep into a
- * feature change. Worth unifying when M7 lands and there are three copies.
+ * Strip anything that could read as Telegram markup or a control character.
+ *
+ * Now a thin alias over `core/shared/text.ts`. This PR is the unification M5's own
+ * build-log entry deferred to "when M7 lands and there are three copies" — the name
+ * and behaviour are unchanged, so M5's callers and tests are untouched.
  */
 export function escapeCategoryName(value: string): string {
-  return value
-    .replace(/[\p{Cc}]/gu, '')
-    .replace(/[*_`[\]<>]/g, '')
-    .slice(0, MAX_CATEGORY_NAME);
+  return sanitiseDisplayText(value, MAX_CATEGORY_NAME);
 }
 
 /**

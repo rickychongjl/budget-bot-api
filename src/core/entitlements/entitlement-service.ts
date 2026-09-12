@@ -25,6 +25,30 @@ export type AdmissionResult =
       message: string;
     };
 
+/**
+ * Options for `admitMessage`. Added by M7 stage 4B — the two limits this call enforces
+ * had to become separable.
+ *
+ * Free admits 5 messages per user-local day, and a callback tap is an admitted event
+ * (M8 "Non-message events"), so `/start` plus the five onboarding answers is six
+ * events: a brand-new Free user was refused `DAILY_MESSAGE_LIMIT` before they could
+ * finish signing up. Ricky's ruling (11 Sep 2026): **the daily cap is a product limit
+ * on a working account and is waived until onboarding completes; fair use is abuse
+ * protection and is never waived.**
+ *
+ * The message is still recorded either way — `usage_counter.counts_toward_daily`
+ * carries the distinction, so an exempt message still fills the rolling window but
+ * does not eat the day's quota once the account is live.
+ */
+export interface AdmitMessageOptions {
+  /**
+   * Skip **only** the Free daily cap for this message. Defaults to false. The caller
+   * that sets it is M7's dispatcher, for a user whose `onboarding_step !== 'done'`.
+   * There is deliberately no option to skip fair use.
+   */
+  skipDailyCap?: boolean;
+}
+
 export type GatedAction =
   | { kind: 'create_category' }
   | { kind: 'reactivate_category' }
@@ -79,6 +103,7 @@ export interface EntitlementService {
     userId: UserId,
     messageId: string,
     receivedAt: Instant,
+    options?: AdmitMessageOptions,
   ): Promise<AdmissionResult>;
 
   /** Throws a typed refusal (`EntitlementRefusal`) if the action would exceed a capacity limit. */

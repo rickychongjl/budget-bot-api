@@ -17,3 +17,4 @@
 export * from './money';
 export * from './local-date';
 export * from './errors';
+export * from './text';

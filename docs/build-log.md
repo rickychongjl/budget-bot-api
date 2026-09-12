@@ -1356,3 +1356,627 @@ the omission surfaced as a failing test rather than as production drift.
 4. **`reminder_local_time` is read but never written.** M5 honours whatever the column
    says (M2's open question 6), and there is an integration test proving a 09:00 user is
    woken at 09:00. Nothing exposes a way to change it, which is correct for this pass.
+
+## M7 stage 4A — Outbound delivery & composition root — 2026-09-11
+
+Phase 4's first stage. M5 landed complete but deliberately deferred delivery to this
+module; these are the four handover items from `docs/M7-telegram-gateway.md`
+("Handed over from M5"). Until this stage, the 07:00 reminder computed correctly and
+sent nothing.
+
+Scope is outbound only. The webhook, routing and commands are stages 4B–4D; see
+`docs/M7-phase-4-plan.md`.
+
+### Built
+
+- **`channels/telegram/telegram-api-client.ts`** — the only code in the repo that calls
+  the Telegram Bot API. Returns a typed `TelegramCallOutcome` instead of throwing,
+  because the entire job of this layer is that every failure is classifiable; an
+  exception escaping into `ctx.waitUntil` would turn a rate-limit into an unhandled
+  rejection. Injectable `fetch`, mirroring `OpenAiLlmParser`'s seam.
+- **`channels/telegram/telegram-message-sender.ts`** — `MessageSender` over that client.
+  The whole substance is M7's classification matrix: 403 → `skipped/blocked`,
+  429 → `retryable` + `retryAfterSeconds`, 5xx/network → `retryable`, 400 → `permanent`.
+- **`src/index.ts` rewritten as the composition root** — `createDatabase`, five Drizzle
+  repositories, every core service, wired per each module's own `index.ts` header.
+  `createApp(makeServices)` and `runScheduled(controller, env, services, fetch)` take
+  their collaborators as parameters so the real routing and guards are testable without
+  a database. 4B's webhook will use the same seam.
+- **`POST /internal/send-allowance`** — `X-Internal-Dispatch-Secret` compared in
+  constant time against `INTERNAL_DISPATCH_SECRET`, then `computeAndSend(userId)`.
+  Returns M5's `SendOutcome` verbatim.
+- **`scheduled`** — M1's hello-world replaced with
+  `findDue(controller.scheduledTime, 50)` → one subrequest per due user.
+- **`wrangler.toml`** — new `[vars] WORKER_BASE_URL`.
+
+### Assumed
+
+- **Plain text, no `parse_mode`, bot-wide.** `core/allowance/messages.ts` *strips*
+  markup characters rather than escaping them and its header says "M7 escapes nothing
+  further" — which only holds if Telegram is never asked to interpret markup. This also
+  settles M7's open decision 3 (`/stats` plain text) in the direction M11 recommends.
+  4B's `render.ts` inherits it.
+- **`WORKER_BASE_URL` is a new binding, not in any plan.** A `scheduled` invocation has
+  no inbound request to derive an origin from, and the fan-out has to be a *real*
+  subrequest — that is what gives each send its own 10ms CPU budget. Committed with a
+  placeholder; it must be set to the deployed origin before the first tick matters.
+- **The sender never deactivates a connection.** M7's page says "403 → deactivate and
+  report skipped", but `DefaultAllowanceService.computeAndSend` already calls
+  `deactivateConnection` on a `skipped` result. The sender only classifies; the caller
+  decides. Wiring it in both places would be a double call. 4B's inbound reply path does
+  its own deactivation.
+- **401 and 404 are classified `permanent`**, which M7's page does not name. Both are
+  misconfigurations a retry cannot fix; `retryable` would re-attempt every 15 minutes
+  forever. They fail loudly instead.
+- **The two dependency cycles are broken with closures, not partially-built objects** —
+  M2↔M3 (`history` / `settingsOf`) and M5↔M3 (`spendInPeriod` / `AllowanceNotifier`),
+  the same way M5's own test harness breaks them. The explicit type annotations on
+  `ledger` and `allowance` are load-bearing: without them TypeScript cannot infer
+  either type (TS7022/TS7023).
+- **Services are built per invocation**, not at module scope —
+  `env.HYPERDRIVE.connectionString` is only valid inside a request or cron context and
+  an isolate outlives any one of them.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors. `npm test` — **440 passed / 0 skipped** across 30
+files, up from 417/0: 23 new tests in two suites under `test/unit/telegram/`
+(`telegram-message-sender.test.ts`, `composition-root.test.ts`) plus
+`test/support/fake-telegram-api.ts`. No existing test changed.
+
+`npm run test:integration` — 62 passed / 0 skipped against the real Neon branch,
+identical to M5's baseline. No schema change in this stage.
+
+`npm run db:generate` — not run; this stage adds no table. `inbound_update` and
+`pending_prompt` arrive in 4B as migration `0005`.
+
+**Not verified against a real Telegram chat.** Nothing here has been deployed, so the
+classification matrix is proven against a fake `fetch` only. The first real send is
+stage 4E's manual `POST /internal/send-allowance` — M5's own open question 1, and with
+production-only (§5.7) there is no staging Worker to rehearse on.
+
+### Open questions
+
+1. **`WORKER_BASE_URL` is a placeholder.** The cron fan-out will post to
+   `https://budge-bot-api.workers.dev` until it is set to the real origin. With
+   `workers_dev = false` that host does not resolve, so the fan-out would fail every
+   tick — silently, since M5 leaves rows `pending` and simply retries. Set it at 4E.
+2. **Nothing enforces the 4096-character cap yet.** M5's bundled reminder is short
+   enough in practice, and `paginate` belongs with the rest of the rendering in 4B — but
+   until then an unusually large bundle would be classified `permanent` (400) rather
+   than split.
+3. **`/internal/send-allowance` is reachable from the public internet**, protected only
+   by the shared secret. That is the design in M7's handover, and the constant-time
+   compare is implemented, but it is worth revisiting whether the route should also
+   require an internal-origin check once there is a custom domain.
+
+## M7 stage 4B — Webhook spine, dedup & routing — 2026-09-11
+
+Phase 4's second stage, and the first time an inbound Telegram message reaches a
+reply. 4A gave the bot a voice; this gives it ears.
+
+Scope is the spine: the webhook, dedup, the update parser, the dispatcher, the command
+catalogue and rendering. The nine product commands are 4C and the free-text path into
+M6 is 4D; see `docs/M7-phase-4-plan.md`.
+
+### Built
+
+- **`channels/telegram/webhook-handler.ts`** — `X-Telegram-Bot-Api-Secret-Token`
+  compared in constant time **before the body is read**, then `claimUpdate`, then 200,
+  then `ctx.waitUntil`. Malformed JSON and unrecognisable updates are answered 200 as
+  well: anything else invites Telegram to retry them forever.
+- **`channels/telegram/update-parser.ts`** — raw `Update` JSON → a discriminated
+  `TelegramEvent`, via Zod. The private-chat check lives here, not in the dispatcher,
+  so no downstream branch can forget it. Nothing throws; an unrecognised update is
+  `unsupported`.
+- **`channels/telegram/dispatcher.ts`** — M11's routing order, one reply per branch.
+  A thrown `RefusalError`/`EntitlementRefusal` renders as its own copy; anything else
+  is one apology and one log line carrying only the update id.
+- **`channels/telegram/command-router.ts` + `commands/`** — the catalogue that is
+  simultaneously the router, `/help`'s source and (at 4E) `setMyCommands`' input, with
+  a tokeniser that handles `/budget "Eating Out" 300`. Ships `/help`, `/cancel`,
+  `/export` and the billing quartet.
+- **`channels/telegram/render.ts`** — plain text throughout, one line of copy per
+  `RefusalCode` behind a `satisfies Record<RefusalCode, string>`, onboarding keyboards
+  (≤4 options) or numbered lists (>4), and `paginate` at 4096.
+- **`channels/telegram/gateway-repository.ts` + `DrizzleGatewayRepository`** —
+  `claimUpdate`, `findPendingPrompt`, `setPendingPrompt`, `clearPendingPrompt`.
+- **`schema/platform.ts`** — `inbound_update` and `pending_prompt`, migration **0005**.
+- **`core/shared/text.ts`** — `sanitiseDisplayText`, the hoist M5's own entry deferred
+  to "when M7 lands and there are three copies"; M2 and M5 delegate to it under their
+  existing names, in a separate commit.
+- **`src/index.ts`** — `POST /telegram/webhook` delegating to the handler, and
+  `SUPPORT_CONTACT` on `Env`.
+
+### Assumed
+
+- **The daily message cap is waived until onboarding completes; fair use never is.**
+  Free admits 5 messages per user-local day and M8 counts a callback tap as an admitted
+  event, so `/start` plus the five onboarding answers is six: a new Free user was
+  refused `DAILY_MESSAGE_LIMIT` before finishing sign-up, and M7's own DoD ("walk
+  `/start` end-to-end in under 5 minutes") could never have passed. **Ricky's ruling,
+  11 Sep 2026.** Implemented as an additive M8 change rather than M7 skipping the gate:
+  `admitMessage` takes an optional `AdmitMessageOptions`, and `usage_counter` grows
+  `counts_toward_daily` (migration **0006**) so a waived message still fills the
+  rolling window but does not eat the day's quota once the account is live. This is a
+  deliberate deviation from M8's "`admitMessage` is the very first gate after user
+  resolution" — the gate still runs, it just enforces one limit instead of two.
+- **`/start` stays in 4C, so 4B's unresolved-user branch has nowhere to send people.**
+  A stranger gets `ONBOARDING_REQUIRED` ("Send /start first") and `/start` is not
+  registered until 4C, where the copy becomes true. Ricky's call, taken knowingly.
+- **Pre-registration senders are not rate-limited.** `usage_counter` is keyed on a
+  `user_id` that does not exist until `/start` creates it, so there is no key to limit
+  a stranger by. `inbound_update` still prevents a Telegram redelivery being answered
+  twice, but nothing caps a stream of distinct messages from an unregistered sender.
+  Closing it means registering on first contact, which is `/start`'s job — see open
+  question 1.
+- **`SUPPORT_CONTACT` is a Wrangler secret, not a `[vars]` entry.** The plan put
+  Ricky's Gmail in `wrangler.toml`; this repository is public. A secret keeps the
+  address out of the repo at no cost (a dashboard-set plain var would be wiped by the
+  next `wrangler deploy`; a secret survives). Ricky was fine with either.
+- **An edited message is treated as a fresh message.** M11 has no edit semantics, and
+  silently ignoring an edit leaves the user's correction unanswered.
+- **A callback query with no `data` is `unsupported`** — it is not a button we built.
+- **Unrouted callback prefixes (`pc:`, `map:`, `cat:`, `hist:`) answer `STALE_ACTION`**
+  until 4C/4D register them. A press that does nothing is worse than one that says so.
+- **The reply's `ChannelConnection` is built from the update itself**, not read back
+  from M2: this is a reply to a message that just arrived, so a lookup could only
+  return the same `chat_id`. Every `MessageSender` reads `chatId` and nothing else.
+
+### Fixed in passing
+
+- **`sanitiseDisplayText` now strips bidi controls.** Both original copies stripped
+  `\p{Cc}` only, and the bidi overrides (U+202A–U+202E, U+2066–U+2069, U+200E/F) are
+  `\p{Cf}` — so a category name containing U+202E could render the rest of the line
+  right-to-left in the user's chat and make a message appear to say something it does
+  not. Caught by `render.test.ts`. Listed explicitly rather than stripping all of
+  `\p{Cf}`, which would take the zero-width joiner and break emoji in category names.
+  The fix reaches M2 and M5 through the hoist.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors; the `RefusalCode` render table is enforced here.
+
+`npm test` — **552 passed / 9 skipped** across 38 files, up from 440: 96 new tests in
+eight suites (`test/unit/telegram/{dispatcher,webhook-handler,webhook-route,update-parser,command-router,render}.test.ts`,
+`test/unit/entitlements/onboarding-waiver.test.ts`, `test/integration/gateway.test.ts`)
+plus `test/support/in-memory-gateway-repository.ts` and `test/unit/telegram/harness.ts`.
+The 9 skipped are the Neon-gated integration suites, skipped here because a fresh
+worktree has no `.env`. **No existing test was changed** — M2's and M5's suites are the
+regression guard for the strip-function hoist, and they pass untouched.
+
+`npm run db:generate` — 0005 (`inbound_update`, `pending_prompt`) and 0006
+(`usage_counter.counts_toward_daily`) generated separately so M7's tables and the M8
+column stay legible in history. Both inspected and committed with their snapshots.
+
+`npm run test:integration` — **72 passed / 0 failed** against the real Neon branch,
+across all six integration files. 0005 and 0006 were applied to the branch by Ricky
+(`npm run db:migrate`) after the first run of this suite reported the expected
+`column usage_counter.counts_toward_daily does not exist`; re-run clean afterwards.
+
+**Nothing here has been deployed or seen a real Telegram message.** The webhook is
+proven against hand-built `Request`s and a fake `ExecutionContext`; `setWebhook` is
+stage 4E.
+
+### Open questions
+
+1. **Should the bot register a user on first contact?** It would close the
+   pre-registration rate-limit gap (above) and make "any message starts onboarding"
+   true rather than aspirational — but it creates an `app_user` row for anyone who
+   messages the bot, and it is `/start`'s job. Decide it in 4C, when `/start` lands.
+2. **`counts_toward_daily` has no backfill concern but does have a retention one.**
+   Every waived onboarding row lives in `usage_counter` forever, same as any other.
+   M9's retention pass should treat them identically; nothing here depends on them
+   after the day they were written.
+3. **The dispatcher's `freeText` port is unimplemented**, so an onboarded user's free
+   text and any open `pending_prompt` answer both get an honest "not yet" reply.
+   `pending_prompt` is therefore written by nothing until 4D — the table, its
+   repository and `/cancel` are all in place and tested ahead of the writer.
+
+## M7 stage 4C — The command catalogue — 2026-09-11
+
+Phase 4's third stage, and the first time the bot can do the product's job. 4A gave it
+a voice, 4B gave it ears; this gives it something to say back.
+
+The nine product commands — `/start`, `/today`, `/budget`, `/stats`, `/history`,
+`/delete`, `/categories`, `/remind`, `/settings` — one file each under
+`channels/telegram/commands/`, each calling the owning core service and rendering what
+comes back. The catalogue is now all sixteen commands Ricky approved. Free text into M6
+is 4D; go-live is 4E.
+
+### Built
+
+- **`commands/start.ts`** — `identity.register` → `onboarding.start`. The only handler
+  that creates anything, and the only one with `requiresAccount: false` that does.
+  `register` runs unconditionally rather than only for an unknown sender: it is
+  idempotent by contract, and it is also the only thing that re-activates a
+  `channel_connection` the 403 path switched off. Someone who blocked the bot and
+  changed their mind types `/start`, and that line is why it works.
+- **`commands/today.ts`** — `allowance.availableToday`, rendered with M5's own
+  `renderAllowanceLine`, so `/today` and the 07:00 reminder cannot word the same figure
+  differently.
+- **`commands/budget.ts`** — `currentBudgets` / `setCap`. The amount converts through
+  M3's `toMinorUnits` **before** any write, which is what makes M11's "no partial write
+  on bad input" true rather than aspirational.
+- **`commands/stats.ts`** — `currentBudgets` + `ensurePeriod` + `spendInPeriod`.
+- **`commands/history.ts`** — the paginated read, forward-only, plus `historyPage`,
+  which both the command and the `hist:` callback go through so a continued page cannot
+  render differently from the page it continues.
+- **`commands/delete.ts`** — `deleteLast`, then `availableToday` **directly**.
+  `AllowanceNotifier.ledgerChanged` is a documented no-op, because `available_today` is
+  derived rather than stored; a handler relying on it would print the pre-delete number.
+- **`commands/categories.ts`**, **`commands/remind.ts`**, **`commands/settings.ts`** —
+  argument-driven; see the decisions below.
+- **`commands/context.ts`** — the three lookups nearly every handler starts with. The
+  name-to-category one goes through M3's `findByName`, which owns normalisation; M7
+  never lowercases or trims a category name itself, or `/budget food` would stop finding
+  "Food" the moment M3's rule changed.
+- **`render.ts`** — `renderSettings`, `renderCategoryList`, `renderBudgetList`,
+  `renderStats`, `renderHistoryPage`, `historyCallbackData`/`parseHistoryCallbackData`,
+  `formatShortDate`. Plain text throughout, as bot-wide.
+- **The command seam widened** — `CommandServices` now carries every core contract a
+  handler may call and nothing else; `CommandContext` gained `sender` because `/start`
+  has to register someone and `register` needs an `externalId` and `chatId` that a
+  `userId` cannot supply. A handler needing something off that list is the signal the
+  behaviour belongs in a core module.
+- **`test/support/domain-services.ts`** — M3/M4/M5 wired for real over one in-memory
+  store, the way the composition root wires them. M5's own sender is kept separate from
+  the dispatcher's, so a test asserting "the bot replied once" never counts a scheduled
+  reminder.
+
+### Decisions taken (Ricky, 11 Sep)
+
+- **`/categories` and `/remind` take arguments, not inline keyboards.** The stage plan
+  sketched `cat:<action>:<id>` buttons. A keyboard rename needs the new name typed back,
+  and the only place M7 can hold "I am waiting for a name" is `pending_prompt`, whose
+  `kind` is `'confirm' | 'clarify'` — a third kind means another migration inside a
+  stage that already adds nine handlers. Quoting a multi-word name is M11's shared
+  contract anyway, and the tokeniser already does it. Consequence: **`hist:` is the only
+  callback prefix 4C introduces.**
+- **`/settings` is view-only this pass.** M2 already makes timezone immutable, refuses a
+  currency change once the account has any transaction, and fixes the reminder at 07:00,
+  leaving the budget anchor date as the only genuinely editable field. Shipping the read
+  and deferring the write beat building an edit path for one field. Enforced by the
+  compiler, not by memory: `CommandServices.identity` is `Pick<IdentityService,
+  'getSettings' | 'register'>`, so a handler that tried to write would not compile.
+  Propagated to `docs/M11-telegram-commands-contracts.md` and
+  `docs/M2-identity-accounts.md`.
+- **`/history` pages forward only.** `Page<T>` is `{ items, nextCursor }` — no backward
+  cursor. A "previous" button would mean changing M3's public contract *and* its Drizzle
+  repository from inside an M7 stage, which is the mixing CLAUDE.md warns against.
+- **Registration stays `/start`-only** — closing 4B's open question 1. A stranger's
+  non-`/start` message keeps getting `ONBOARDING_REQUIRED`. The pre-registration
+  rate-limit gap 4B logged stays open knowingly: closing it means an `app_user` row for
+  every wrong number and spam bot that ever messages the bot.
+
+### Assumed
+
+- **`/stats` materialises a period row on a read path.** `spendInPeriod` needs a
+  `budget_period_id` and `currentBudgets` returns a `Period` without one, so the id has
+  to come from `ensurePeriod` — an upsert. This is the existing house pattern rather
+  than a new liberty: M5's `availableToday` calls `ensurePeriod` too, so `/today` has
+  always done it. M4 deliberately has no cron opening periods in advance, so
+  materialising on first read is how a period row comes to exist at all. The upsert is
+  race-safe on `(budget_id, period_key)`, and a cycle with nothing logged still reads as
+  "cap applies, nothing spent" — never an error.
+- **`/history`'s page size is 10, and the More button is dropped rather than truncated**
+  when a cursor would exceed Telegram's 64-byte `callback_data` cap. A page with no
+  button is recoverable; a 400 from the Bot API is a reply the user never sees.
+- **An archived category still names its old transactions.** `/history` lists with
+  `includeArchived: true` — a row rendering as "uncategorised" purely because the
+  category was later archived would be a lie about the user's own history.
+- **`/settings` ignores arguments rather than refusing them.** `/settings currency USD`
+  simply shows the settings. Refusing would imply the syntax nearly works.
+- **A budget start date mistyped during onboarding cannot be corrected** without
+  deleting the account. Direct consequence of the view-only ruling, recorded so it is
+  not rediscovered as a bug. First thing to revisit when settings editing returns.
+
+### Fixed in passing
+
+- **Removed a branch in `renderBudgetList` that could never run.** M4's page says
+  `/budget` should show both the current-cycle snapshot and the standing cap after a
+  mid-cycle change ("only differs from the standing rule right after a mid-period
+  change, in which case show both"). That case cannot occur: M4's own `setCap` updates
+  the standing budget **and** the materialised snapshot for the current cycle in the
+  same call (`default-budget-service.ts:168-174`), precisely so the user's "my budget is
+  300 now" means now. The two cannot diverge, so the second figure was dead code
+  pretending to be a feature. Caught by `commands/budget.test.ts`, which now asserts the
+  sync instead. **M4's page is stale on this point, not the implementation.**
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors.
+
+`npm test` — **632 passed / 0 skipped** across 47 files with `DATABASE_URL` set, and
+**623 passed / 9 skipped** without it (the 9 are the Neon-gated integration suites).
+Up from 552: 68 new tests in nine suites (`test/unit/telegram/commands/*.test.ts`) plus
+the 4C views appended to `render.test.ts`, and `test/support/domain-services.ts`.
+
+Three 4B assertions were updated, each because 4C's landing is the thing they described
+as pending: the catalogue now finds `/today`, `/start` joined the no-account set, and a
+`hist:` press now reaches M3 — which rejects a bogus cursor in its own words rather than
+as a generic stale button. No other existing test changed.
+
+`npm run test:integration` — **72 passed / 0 failed** against the real Neon branch,
+across all six integration files. 4C adds no schema and touches no repository, so this
+is a regression check rather than new coverage.
+
+`npm run db:generate` — **not run, and correctly so.** Stage 4C adds no schema. Needing
+a migration here would have been a signal the design had drifted.
+
+Commands are tested through the dispatcher rather than by calling `handle` directly: a
+handler in isolation proves nothing about the two things most likely to break it — that
+the router reaches it with the tokens it expects, and that a refusal it throws is
+rendered rather than escaping as an apology. The figures in those tests are real —
+`/today` asserts `$25` because `$600` over the 24 days left in the 5 Sep – 4 Oct cycle
+is `$25`, computed by M5 from a materialised period and a real ledger sum, not a fake.
+
+**Nothing here has been deployed or seen a real Telegram message.** `setWebhook` is
+stage 4E, and production is the only environment (master plan §5.7).
+
+### Open questions
+
+1. **The Notion M11 and M2 pages still describe `/settings` as editable.** The local
+   docs are updated; mirroring them to Notion is Ricky's to approve, since those pages
+   are the shared source of truth and the wording there should be his.
+2. **Nothing corrects a mistyped budget anchor date.** See the accepted cost above.
+   Options when it comes back into scope: a narrow `/settings startdate`, or folding it
+   into a broader settings-editing pass. Not urgent until someone actually mistypes it.
+3. **`/history`'s page size (10) has never been seen on a real phone.** It is a guess
+   that reads well in a test. Worth a look during 4E's manual walkthrough, when there is
+   a real chat window to judge it in.
+
+## M4/M5 — A cap change is spendable today — 2026-09-11
+
+A follow-on to 4C, prompted by Ricky reviewing how `/budget` behaves mid-cycle. The
+mid-period change and the carry-forward to the next cycle were already exactly what he
+wanted (`setCap` moves the standing budget and the current snapshot together; a period
+materialised later snapshots the new standing cap). What he did not want was the
+*timing*: raise Food at 2pm and the daily figure only moved the following morning,
+because M5 freezes `daily_target` per date. **His call: a raise today gives you more to
+spend today.** Rewrite the row regardless of delivery status; never re-send.
+
+Core M4/M5 work, so it sits on its own branch rather than inside 4C.
+
+### Built
+
+- **`BudgetAllowanceNotifier`** (`core/budgets/budget-service.ts`) — M4's outgoing
+  port to M5, one method: `capChanged(userId, categoryId)`. Optional on
+  `DefaultBudgetService`, called from `setCap` only after both M4 rows are written and
+  only when the current cycle's snapshot existed (a day's target row references its
+  period, so there is nothing to re-price otherwise). Best-effort, swallowed on
+  failure, exactly as M3's `AllowanceNotifier` is: the cap is the system of record and
+  today's figure is a downstream effect that lands tomorrow anyway.
+- **`DefaultAllowanceService.capChanged`** — finds today's row, re-prices it from the
+  period's new cap and spend **to the end of yesterday**, writes it back through a new
+  `AllowanceWrites.updateTarget`. The target formula's inputs now come from one private
+  `targetFor`, shared by the first-of-the-day compute and the re-price, so the two
+  cannot disagree about what goes in.
+- **`updateTarget`** on the port, the Drizzle repository and the in-memory adapter.
+  Moves the one column; `delivery_status`, `attempts` and `sent_at` are untouched.
+- **`/budget <category> <amount>`** now confirms with the day's figure, fetched from
+  M5's `availableToday` and worded by M5's `renderAllowanceLine` — the same read and
+  the same sentence `/today` uses, so the two cannot differ. *"Food is now $960 a cycle.
+  You can spend $40 on Food today to stay on budget."* replaces *"The daily figure
+  updates tomorrow morning."*
+- **Cycle 3 in the composition root.** M5 already needed M4 (`ensurePeriod`); M4 now
+  needs M5. Broken with the same closure the other two cycles use.
+
+### The invariant, narrowed rather than dropped
+
+M5's rule was "never recomputed for that date". It is now **"never recomputed from
+that day's spend"** — M5's page, `daily-target.ts`, the schema comment and the service
+header all say so. The failure the rule exists to prevent is a lunchtime overspend
+smearing itself across the remaining days; a cap change is a different trigger, and
+the re-price still takes spend only to the end of yesterday. Consequences the tests
+pin down:
+
+- today's own spend is still measured *against* the re-priced target, so an overspend
+  stays visible as a negative number;
+- re-pricing twice on one day gives the same number — the inputs do not move during
+  the day;
+- a `sent` row is rewritten in place, stays `sent` with its `sent_at`, and a later tick
+  finds nothing outstanding — no second message;
+- no row for today means nothing is written, and the day's first read computes from
+  the new snapshot as before.
+
+### Decisions taken (Ricky, 11 Sep)
+
+- Mid-period cap changes are allowed and take effect this cycle; the new cap carries
+  forward to the next cycle. (Already the behaviour; confirmed.)
+- The extra is spread over the days left, not backfilled over days already gone.
+- No "just this month" override — every change is permanent going forward.
+- Rewrite today's row regardless of delivery status; never re-send the morning bundle.
+
+### Verification
+
+`npx tsc --noEmit` — clean, 0 errors.
+
+`npx vitest run` — **637 passed / 9 skipped** across 47 files (14 tests added: 8 in
+`test/unit/allowance/default-allowance-service.test.ts` replacing the one that asserted
+the old timing, 3 in `test/unit/budgets/`, 1 in `test/unit/telegram/commands/budget.test.ts`,
+3 in `test/integration/allowance.test.ts` on PGlite). **The 9 skipped are
+`test/integration/identity.test.ts` and `test/integration/entitlements.test.ts`, which
+need `DATABASE_URL` and were not executed in this environment** — neither touches
+anything this change modifies. No `db:generate`: no schema change; `updateTarget` is an
+`UPDATE` to an existing column.
+
+### Open questions
+
+- **Backdating into a cycle that never had a period row.** Discussed with Ricky the
+  same day, not yet decided. `materialisePeriod` stamps the *current* standing cap, so
+  an expense backdated into an earlier cycle that no read or write ever opened records
+  that cycle at today's cap. It needs three things to line up (no activity in that
+  category that cycle — including no `/today`, `/stats` or 07:00 reminder, all of which
+  materialise — then a cap change, then a backdated entry), and nothing shipped displays
+  a past cycle's cap. Options on the table: leave and log; a change-keyed cap-history
+  table; or a period-keyed table, which Ricky raised and which has the same lazy-creation
+  gap as `budget_period` itself. Also noted: `schema/budget.ts` says "superseded rows
+  stay for their snapshots" but `upsertActiveBudget` updates in place, so that comment is
+  stale whichever way this goes.
+
+## M4 — The cap moves to `category_period_cap` — 2026-09-12
+
+Ricky's call after the 11 Sep discussion of the backdating hole: rather than bolt a
+change log beside two existing cap columns, **remove the cap from `budget` and
+`budget_period` and keep it in one place, per category per cycle.** The "copy forward
+at rollover" he described is implemented as a lookup rather than a job: a cycle's cap is
+the `category_period_cap` row with the greatest `period_key` at or before it. Setting a
+cap writes the current cycle's row; every later cycle reads it until a later row
+supersedes it; every earlier cycle keeps the row that governed it. No cron, no catch-up
+logic, one `WHERE` clause.
+
+The hole it closes: a cycle nobody logged in, ran `/today` in, or was reminded in had
+no `budget_period` row, and opening it later — a backdated expense — snapshotted
+whatever the standing cap was *by then*. Set 1000 in July, raise to 1200 in September,
+backdate a dinner into August: August was recorded at 1200. Now it resolves to July's
+row. And before any row existed, the category had no cap — M3 records the transaction
+with a null `budget_period_id`, exactly as it does for an uncapped category.
+
+### Built
+
+- **`category_period_cap`** (`schema/budget.ts`): `(category_id, period_key)` unique,
+  `cap_minor_units` nullable — null is a removal, "no cap from this cycle on", so the
+  last cap cannot leak into cycles where the budget was gone. Keyed by category, not
+  budget, so history survives a budget being removed and re-added (each a new
+  `budget` row).
+- **`budget` and `budget_period` lose `cap_minor_units`** and their positive checks.
+  `Budget` carries no amount. `BudgetPeriod.capMinorUnits` and
+  `BudgetView.capMinorUnits` stay on the domain types — M5 and M7's contracts did not
+  move — but are **resolved from the history on every read**, never stored.
+  `BudgetView.snapshotCapMinorUnits` is gone; there is one figure.
+- **Repository:** `findGoverningCap` (`period_key <= ? order by period_key desc limit
+  1`), `findGoverningCaps` (`distinct on (category_id)`, same ordering — one query for
+  `/budget` and `/stats`), `upsertPeriodCap` (`on conflict do update`; two `/budget`
+  messages in one cycle leave one row). `updatePeriodCap` and `findPeriodsByKey` are
+  gone. `'YYYY-MM'` keys sort chronologically as text, so both reads are index scans.
+- **Service:** `materialise` resolves the cap *before* it writes a period and writes
+  none when nothing governs the cycle — a period row without a cap would be a
+  denominator of nothing. `ensurePeriodForCategory` returns null for such a cycle;
+  `ensurePeriod` refuses (`RESOURCE_NOT_FOUND`), because its callers ask for the
+  current cycle of an active budget, which always has one. `setCap` upserts the
+  current cycle's row; `deactivate` writes a null row for it. `currentBudgets` throws
+  — loudly, not a refusal — if an active budget has no governing cap, which is the
+  store contradicting itself.
+- **Migration `0007_category_period_cap`** — the one migration in the repository
+  that moves data. Drizzle-kit's `CREATE` / `DROP COLUMN` output, reordered so three
+  hand-written backfill `INSERT`s run while the old columns still exist: every
+  materialised cycle's snapshot becomes that cycle's row (the later budget winning a
+  shared cycle); a removed budget writes a null row for the cycle it was removed in;
+  an active budget's standing cap goes on the cycle it was last set in (`updated_at`)
+  and overrides that cycle's snapshot, as `setCap` does live. Period keys are derived
+  in SQL exactly as `period.ts` does — anchor day capped at 28, cycle labelled by its
+  start month, in the user's zone. `test/integration/migration-0007-category-period-cap.test.ts`
+  seeds the *old* shape on PGlite, runs `0007`, and pins every resulting row.
+  `drizzle-kit generate` reports no drift afterwards.
+- **Consumers:** `/budget`, `/stats`, `/categories` and M2's account summary read
+  caps through `currentBudgets` (the summary skips it before onboarding step 3 —
+  no anchor, no budgets). `/budget <category> <amount>` uses the parsed amount for its
+  headline. `FakeBudgets` in M2's tests keeps a cap map beside its rows.
+
+### Decisions taken (Ricky, 12 Sep)
+
+- Single source of truth for the cap: one table, per category per cycle. Cap columns
+  removed from `budget` and `budget_period`, not left in parallel.
+- Carry-forward by lookup ("latest cycle at or before"), not by a rollover job. M4's
+  standing "no cron" decision holds; this extends it to caps.
+- A removal is a null row, not the absence of one, so re-adding a budget later never
+  resurrects an old cap for the cycles in between.
+
+### Fixed in passing
+
+- `schema/budget.ts` said "superseded rows stay for their snapshots" of `budget`,
+  which `upsertActiveBudget` (an in-place `UPDATE`) never did. Rewritten to what the
+  partial index actually serves: a removed budget stays, inactive, for its periods.
+- M3's invariant "a confirmed transaction with a category that has an active budget
+  always has a `budget_period_id`" is now qualified: when its date falls in a cycle
+  that budget carried a cap in. Two M3 unit tests that backdated into August with a
+  cap set in September were asserting the old stamping; they now set the cap in
+  August first, and a third pins the new behaviour at M3's seam.
+
+### Verification
+
+`npx tsc --noEmit` — clean, 0 errors.
+
+`npx vitest run` — **652 passed / 9 skipped** across 48 files. Net +15 tests: M4 unit
++10 (governing rows, the August case, two changes in one cycle, removal rows,
+re-adding in a later cycle, the loud invariant); `ledger-budgets` integration +3 (the
+real `<=`/`distinct on` queries on PGlite, the upsert's unique constraint, the null
+row); a new 4-test suite for the `0007` backfill on old-shape rows; M3 unit +1. **The 9
+skipped are `test/integration/identity.test.ts` and `test/integration/entitlements.test.ts`,
+gated on `DATABASE_URL`, which this environment does not have — not executed.**
+Neither touches M4.
+
+`npx drizzle-kit generate` after the change — no diff; the committed SQL matches the
+schema.
+
+### Open questions
+
+- **`budget.currency_code`** now sits on a row with no amount. It denominates every
+  cap for the category and M2 fixes the account currency once anything is logged, so
+  it is coherent but faintly odd. Left where it is: moving it widens the change for no
+  behaviour. Revisit if `budget` ever loses another column.
+- **`gateway.test.ts`** still builds its PGlite schema from `0003` + `0005` only, so it
+  sees the pre-`0007` `budget` shape. It never touches budgets, so this is harmless, but
+  every integration suite would be better off applying the full journal in order. Not
+  changed here — CLAUDE.md, "do not combine broad structural refactoring with an
+  unrelated feature change".
+
+## M4 / tests — `currency_code` follows the cap; PGlite suites follow the journal — 2026-09-12
+
+The two open questions from the entry above, taken as their own change each (CLAUDE.md,
+"do not combine broad structural refactoring with an unrelated feature change"). Two
+commits, no behaviour change to any command.
+
+### Built
+
+- **`test/support/pglite-migrations.ts`** — `applyMigrations(pg)` reads
+  `meta/_journal.json` and applies every committed `.sql` in `idx` order, the same files
+  `db:migrate` runs; `{ through }` stops after a tag and `applyMigration(pg, tag)` runs
+  one, for the suites that seed an old shape first. Both directions of drift fail at
+  load: a journal entry with no file, a file the journal does not list. The `.sql`
+  files arrive through `import.meta.glob(…, { query: '?raw' })`, typed in
+  `test/sql-modules.d.ts` to that one shape rather than by pulling `vite/client` in
+  beside `@cloudflare/workers-types`.
+- **Every PGlite suite** now builds from it: `gateway` (was `0000`+`0003`+`0002`+`0005`,
+  so it ran on the pre-`0007` `budget`), `ledger-budgets`, `allowance`, the `0007`
+  backfill suite (`through: '0006_…'`, seed, then `0007`), and `parse-event-fk`, which
+  had carried a hand-copied DDL block with a stub `app_user` verified against
+  drizzle-kit once, on 6 Sep. Its insert of `app_user (timezone)` works unchanged
+  against the real table: every other column has a default.
+- **`currency_code` moves from `budget` to `category_period_cap`** (`0008_currency_on_cap`).
+  An amount and what it is denominated in now sit on one row, the precedent M3 set with
+  `transaction.currency_code` ("copied onto each row, not joined from the user, so
+  history still renders correctly if the default currency ever changes"). `budget` says
+  only "this category is budgeted". A removal row carries the currency too, so the
+  column is never null. `Budget` loses `currencyCode`; `PeriodCap` and
+  `UpsertPeriodCapInput` gain it; `UpsertBudgetInput` loses it; `setCap` and
+  `deactivate` pass `settings.currencyCode` through to the cap write. Nothing rendered
+  it from `Budget` — M7 formats money with `settings.currencyCode` — so no command
+  output changes.
+- **Migration `0008`** is drizzle-kit's two statements reordered by hand around a
+  backfill, as `0007` was: add the column nullable, `UPDATE` each cap row from its
+  category's live budget (else its most recently updated removed one, else the
+  account's currency — a row with no budget at all cannot come from the service, but
+  the `COALESCE` costs nothing), then `SET NOT NULL` and drop from `budget`.
+  `test/integration/migration-0008-currency-on-cap.test.ts` seeds the `0007` shape and
+  pins all three branches plus the final column state. `drizzle-kit generate` reports
+  no drift.
+
+### Not done, deliberately
+
+- `BudgetView` and `BudgetPeriod` do not surface the cap's currency. Their consumers
+  format with the account currency, which M2 fixes once anything is logged; adding a
+  field nobody reads would be the same faint oddity moved one layer up.
+
+### Verification
+
+`npx tsc --noEmit` — clean.
+
+`npx vitest run` — **656 passed / 9 skipped** across 49 files (+4: the `0008` suite).
+**The 9 skipped are `identity.test.ts` and `entitlements.test.ts`, gated on
+`DATABASE_URL`, which this environment does not have — not executed.** Neither
+touches M4's tables or the PGlite helper.
+
+`npx drizzle-kit generate` after the schema change — "No schema changes, nothing to
+migrate".

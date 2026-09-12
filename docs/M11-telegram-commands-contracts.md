@@ -28,18 +28,26 @@ Every module's own page (M2–M8) for the domain behaviour it's cataloguing, plu
 - **Budget cycle: monthly only, account-wide** — M11's page still lists this as open ("monthly only or weekly/fortnightly? account-wide or per-category?"); it's resolved. See M4's plan §"Period derivation."
 - **Reminder time: fixed 07:00 local for every user, no customisation, bundled into one message per user** — M11's page still says "default 08:00, custom time TBD"; both are stale. See M5's plan.
 - **Onboarding: 5 steps** (timezone → currency → budget start date → categories+caps → reminder selection), starter category is **"Food" only**. See M2's plan.
+- **`/settings` is view-only for this pass — Ricky, 11 Sep 2026 (M7 stage 4C).** M2 already makes the timezone immutable, refuses a currency change once the account has any transaction, and fixes the reminder at 07:00 with no customisation; that left the budget anchor date as the only genuinely editable field, and the call was to ship the read and defer the write rather than build an edit path for one field. **Accepted cost: a budget start date mistyped during onboarding cannot be corrected without deleting the account.** `IdentityService.updateSettings` keeps its contract and its rules — no command surfaces them. Revisit alongside whatever makes the anchor date correctable.
+- **`/categories` and `/remind` are argument-driven, not inline keyboards — Ricky, 11 Sep 2026 (M7 stage 4C).** A keyboard rename needs the new name typed back, and M7's `pending_prompt.kind` is `'confirm' | 'clarify'`; a third kind is a migration. Quoting a multi-word name is this page's own shared contract, so the tokeniser already covers it.
+- **`/history` pages forward only — Ricky, 11 Sep 2026 (M7 stage 4C).** M3's `Page<T>` carries a `nextCursor` and nothing else; a "previous" button would be an M3 contract change made from inside an M7 stage.
+- **Registration is `/start`-only — Ricky, 11 Sep 2026 (M7 stage 4C).** The bot does not create an account for anyone who merely messages it. The consequence, logged rather than fixed: an unregistered sender is not rate-limited, because `usage_counter` is keyed on a `user_id` that does not exist yet.
 - **`/export` — deferred (Story 7), not built this pass.** Ricky's call, round 5. Full-history CSV export was previously in scope for both tiers (the master plan's original DoD had it); it's now pushed out. `/export` should exist as a stub returning "not yet available," same pattern as the billing commands — see M7's plan, M3's plan (`exportCsv` deferred), M2's plan (`exportAccount` deferred).
 
 ## Still open — resolve before the dependent module ships, your call not an engineering default
 | Decision | Blocks | Recommended framing if you want a default |
 |---|---|---|
-| Approve proposed command names/syntax (`/categories`, `/settings`, `/upgrade`, `/subscription`, `/cancel`) before BotFather registration | M7 | These read as reasonable as proposed — a quick sign-off is probably all this needs |
-| Interactive `/history` editing: Premium-gated (as proposed) or both tiers | M8, M3 | Still deferred like `/export` — no interactive editing this pass, on either tier |
+| Interactive `/history` editing: Premium-gated (as proposed) or both tiers | M8, M3 | Still deferred like `/export` — no interactive editing this pass, on either tier. (The *read* path shipped 11 Sep 2026; only editing is still open.) |
 | Telegram Stars price + tested AU$ approximation | M8, M10 | Explicitly deferred to Phase 2 already — needs live pricing validation, not an engineering guess |
 | Excel export | — | Not requested for this pass; skip (moot for now — CSV export itself is deferred too) |
-| Unknown command: full `/help` dump vs. a short "I don't know that one" | M7 | Short reply + pointer to `/help` reads as friendlier; low-stakes, pick either |
-| Inline keyboard option count before falling back to plain text | M7 | Low-stakes engineering default is fine |
-| `/stats`: plain text only, or Telegram-native formatting | M7 | Plain text is simpler and avoids the escaping risk noted in M7's plan |
+
+### Closed during the M7 build — four rows that used to live in the table above
+| Decision | Answer | When |
+|---|---|---|
+| Approve command names/syntax before BotFather registration | **Approved, all sixteen**: `/start /today /budget /categories /settings /stats /delete /history /remind /help /cancel /export /upgrade /subscribe /subscription /paysupport`. Registration itself is scripted from the handler catalogue at stage 4E, so the `/` menu cannot drift from what exists | Ricky, 11 Sep 2026 |
+| Unknown command: full `/help` dump vs. a short "I don't know that one" | **Short reply plus a pointer to `/help`** | M7 stage 4B |
+| Inline keyboard option count before falling back to plain text | **4**; above that an option list renders as a numbered plain-text prompt, which is answerable by typing | M7 stage 4B |
+| `/stats`: plain text or Telegram-native formatting | **Plain text.** Bot-wide, in fact: no send carries a `parse_mode`, which is what makes stripping user text (rather than escaping it) correct | M7 stages 4B–4C |
 
 ---
 
@@ -50,14 +58,14 @@ Every module's own page (M2–M8) for the domain behaviour it's cataloguing, plu
 | Free text | Transaction confirmation or one clarification | Both; existing; fair use | M6 → M3 |
 | `/today [category]` | Today's allowance | Both; counts toward quota | M5, M8 |
 | `/budget [category] [amount]` | View/set a category cap | Both; existing | M4 |
-| `/categories` | View/create/rename/archive categories | Both; proposed; 10/30 capacity; archive gated on no-transactions-this-cycle | M3, M8 |
-| `/settings` | View immutable timezone; view/change currency; view fixed monthly cycle start date | Both; proposed | M2, M4 |
+| `/categories` | View/create/rename/archive categories. **Argument-driven** (`add` / `rename` / `archive`), not an inline keyboard | Both; shipped; 10/30 capacity; archive gated on no-transactions-this-cycle | M3, M8 |
+| `/settings` | **View only** (shipped 11 Sep 2026): timezone (immutable), currency, monthly cycle start date, 07:00 reminder time. No edit path this pass | Both; shipped | M2, M4 |
 | `/stats [category]` | Current-period summary | Both; existing | M3, M4 |
 | `/delete` | Soft-delete last confirmed entry | Both; existing | M3 |
 | `/help [command]` | Usage, tier labels, support links | Both; existing | M7 renders M11's catalogue |
-| `/history` | Paginated history + edit | **Deferred this pass** (interactive editing, both tiers) | M3, M8 |
+| `/history` | Paginated history (**read path shipped**, forward-only paging) + edit | Editing **deferred this pass** (both tiers); read path shipped 11 Sep 2026 | M3, M8 |
 | `/export` | Full-history CSV | **Deferred — Story 7, round 5.** Stub only, "not yet available." | M3 |
-| `/remind [category]` | View/change reminder selection | Both; 1/5 categories; fixed 07:00, no custom time | M5, M2, M8 |
+| `/remind [category]` | View/change reminder selection. **Argument-driven**: `/remind <category>` toggles | Both; shipped; 1/5 categories; fixed 07:00, no custom time | M5, M2, M8 |
 | `/upgrade`, `/subscribe` | Premium offer + Stars checkout | Both; **stubbed this pass** | M8 |
 | `/subscription` | Status + cancel-renewal | Both; **stubbed this pass** | M8 |
 | `/paysupport` | Payment support route | Both; **stubbed this pass** | M8 |

@@ -21,10 +21,18 @@ workers_dev = false
 [observability]
 enabled = true
 
+# Not a secret — the Worker's own public origin. The cron fan-out needs it because a
+# `scheduled` invocation has no inbound request to derive an origin from, and the
+# fan-out has to be a real subrequest so each send gets its own 10ms CPU budget.
+# Set this to the deployed origin before the first cron tick matters.
+[vars]
+WORKER_BASE_URL = "https://budge-bot-api.workers.dev"
+
 # Workers Cron Triggers — the only "background process" available on the Free plan.
 # M5's daily-allowance scheduler runs every 15 minutes (Adelaide/Darwin are UTC+9:30,
-# so an hourly tick would deliver a 07:00 message half an hour off). For M1 this fires
-# a one-line hello-world handler to prove the scheduler wiring before M5 needs it.
+# so an hourly tick would deliver a 07:00 message half an hour off). As of M7 stage 4A
+# this drives the real fan-out: `findDue(scheduledTime, 50)` -> one subrequest to
+# `/internal/send-allowance` per due user.
 [triggers]
 crons = ["*/15 * * * *"]
 

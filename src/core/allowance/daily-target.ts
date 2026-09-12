@@ -17,9 +17,11 @@ import type { MinorUnits } from '../shared/common';
  * without mocking time.
  *
  * `daily_target` is computed once per `(user, category, date)` and **never recomputed
- * for that date** — M5's central invariant. Recomputing live from current spend would
- * spread a lunchtime overspend across the remaining days, `available_today` would
- * quietly stay positive, and the user would never see they had gone over.
+ * from that day's spend** — M5's central invariant. Recomputing live from current spend
+ * would spread a lunchtime overspend across the remaining days, `available_today` would
+ * quietly stay positive, and the user would never see they had gone over. A cap change
+ * re-prices it (`DefaultAllowanceService.capChanged`) with the same "to the end of
+ * yesterday" input, which is why that one exception does not reopen the hole.
  */
 export function computeDailyTarget(input: {
   remaining: MinorUnits;

@@ -26,9 +26,10 @@ import { appUser } from './identity';
  *     This constraint is the whole double-send guard: two concurrent ticks racing to
  *     insert the same day's target serialise on the index rather than both sending.
  *   - `daily_target_minor_units bigint not null` — written once per (user, category, date),
- *     never recomputed for that date. This is M5's central invariant: recomputing live
- *     would smear a lunchtime overspend across the remaining days and the user would
- *     never see they had gone over.
+ *     never recomputed from that day's spend. This is M5's central invariant: recomputing
+ *     live would smear a lunchtime overspend across the remaining days and the user would
+ *     never see they had gone over. The one write that moves it is a cap change
+ *     (`updateTarget`, 11 Sep), which re-prices from the new cap and yesterday's spend.
  *   - `budget_period_id` -> `budget_period(id) on delete cascade` (M4-owned table).
  *     Non-null is safe because a reminder requires an active budget on the category,
  *     so a period always materialises.
@@ -51,7 +52,7 @@ export const dailyAllowanceSend = pgTable(
       .references(() => category.id, { onDelete: 'cascade' }),
     /** The user-local calendar date this target is for. Never backfilled. */
     localDate: date('local_date', { mode: 'string' }).notNull(),
-    /** Frozen once written. `available_today` is derived from it, never stored. */
+    /** Moves only on a cap change (M5 `capChanged`). `available_today` is derived from it, never stored. */
     dailyTargetMinorUnits: bigint('daily_target_minor_units', { mode: 'bigint' }).notNull(),
     budgetPeriodId: uuid('budget_period_id')
       .notNull()

@@ -108,7 +108,7 @@ describe('happy path — 5 steps', () => {
     expect(p5.text).not.toContain('• Fun');
 
     const foodId = (await categories.list(userId)).find((c) => c.name === 'Food')?.id;
-    expect(budgets.rows.map((b) => [b.categoryId, b.capMinorUnits])).toEqual([
+    expect(budgets.rows.map((b) => [b.categoryId, budgets.caps.get(b.categoryId as string)])).toEqual([
       [foodId, 60000n],
       [expect.any(String), 25050n],
     ]);
@@ -292,7 +292,7 @@ describe('step 4 — capacity and input rules', () => {
     expect(dup).toMatchObject({ kind: 'refused', code: 'INVALID_ARGUMENT' });
     prompt(await onboarding.answer(userId, { value: 'FOOD 300' }));
     expect(budgets.rows).toHaveLength(1);
-    expect(budgets.rows[0]?.capMinorUnits).toBe(30000n);
+    expect(budgets.caps.get(budgets.rows[0]?.categoryId as string)).toBe(30000n);
     expect((await categories.list(userId)).length).toBe(1);
   });
 
