@@ -2,10 +2,6 @@ import { PGlite } from '@electric-sql/pglite';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
-import identityDdl from '../../src/infrastructure/database/migrations/0000_identity.sql?raw';
-import ledgerDdl from '../../src/infrastructure/database/migrations/0003_flashy_true_believers.sql?raw';
-import allowanceDdl from '../../src/infrastructure/database/migrations/0004_faithful_baron_zemo.sql?raw';
-import capsDdl from '../../src/infrastructure/database/migrations/0007_category_period_cap.sql?raw';
 import { DefaultBudgetService } from '../../src/core/budgets';
 import {
   DefaultCategoryService,
@@ -21,6 +17,7 @@ import {
 } from '../../src/infrastructure/database/repositories/drizzle-budget-repository';
 import { DrizzleLedgerRepository } from '../../src/infrastructure/database/repositories/drizzle-ledger-repository';
 import type { Database } from '../../src/infrastructure/database/client';
+import { applyMigrations } from '../support/pglite-migrations';
 import { TestClock } from '../support/test-clock';
 
 /**
@@ -32,8 +29,8 @@ import { TestClock } from '../support/test-clock';
  *
  * Runs in-process on PGlite (real Postgres, WASM), so it needs no Neon branch and no
  * `DATABASE_URL` — same approach as `parse-event-fk.test.ts`. The schema is built by
- * executing the **committed migration files**, not a hand-copied DDL block, so this
- * suite cannot drift away from what a deploy applies.
+ * applying the **committed migrations in journal order**, not a hand-copied DDL
+ * block, so this suite cannot drift away from what a deploy applies.
  *
  * What PGlite cannot show is genuine parallelism: it is a single connection, so the
  * `ensurePeriod` race is exercised here as the conflict *path* plus the constraint
@@ -106,12 +103,7 @@ describe('M3 + M4 over Drizzle against real Postgres (PGlite)', () => {
   let otherUserId: string;
 
   beforeAll(async () => {
-    await pg.exec(identityDdl);
-    await pg.exec(ledgerDdl);
-    // M5's migration adds `category.reminder_enabled`, which M3's own reads now select.
-    await pg.exec(allowanceDdl);
-    // M4's cap history — moves the cap out of `budget` / `budget_period` (12 Sep).
-    await pg.exec(capsDdl);
+    await applyMigrations(pg);
   }, 60_000);
 
   afterAll(async () => {

@@ -2,12 +2,9 @@ import { PGlite } from '@electric-sql/pglite';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import identityDdl from '../../src/infrastructure/database/migrations/0000_identity.sql?raw';
-import ledgerDdl from '../../src/infrastructure/database/migrations/0003_flashy_true_believers.sql?raw';
-import allowanceDdl from '../../src/infrastructure/database/migrations/0004_faithful_baron_zemo.sql?raw';
-import capsDdl from '../../src/infrastructure/database/migrations/0007_category_period_cap.sql?raw';
 import type { Database } from '../../src/infrastructure/database/client';
 import { DrizzleAllowanceRepository } from '../../src/infrastructure/database/repositories/drizzle-allowance-repository';
+import { applyMigrations } from '../support/pglite-migrations';
 
 /**
  * M5 against a real Postgres. The unit suite proves the *business rules* over an
@@ -19,7 +16,8 @@ import { DrizzleAllowanceRepository } from '../../src/infrastructure/database/re
  *
  * Runs in-process on PGlite (real Postgres, WASM), so it needs no Neon branch and no
  * `DATABASE_URL` — same approach as `ledger-budgets.test.ts`. The schema is built by
- * executing the **committed migration files**, so this suite cannot drift from a deploy.
+ * applying the **committed migrations in journal order**, so this suite cannot drift
+ * from a deploy.
  */
 
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -33,10 +31,7 @@ let repository: DrizzleAllowanceRepository;
 
 beforeAll(async () => {
   pg = new PGlite();
-  await pg.exec(identityDdl);
-  await pg.exec(ledgerDdl);
-  await pg.exec(allowanceDdl);
-  await pg.exec(capsDdl);
+  await applyMigrations(pg);
   db = drizzle(pg) as unknown as Database;
   repository = new DrizzleAllowanceRepository(db);
 });

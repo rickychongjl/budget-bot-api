@@ -1,9 +1,6 @@
 import { PGlite } from '@electric-sql/pglite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import identityDdl from '../../src/infrastructure/database/migrations/0000_identity.sql?raw';
-import ledgerDdl from '../../src/infrastructure/database/migrations/0003_flashy_true_believers.sql?raw';
-import allowanceDdl from '../../src/infrastructure/database/migrations/0004_faithful_baron_zemo.sql?raw';
-import capsDdl from '../../src/infrastructure/database/migrations/0007_category_period_cap.sql?raw';
+import { applyMigration, applyMigrations } from '../support/pglite-migrations';
 
 /**
  * The one migration in this repository that moves data. Every other suite applies
@@ -37,9 +34,8 @@ async function caps(): Promise<{ category_id: string; period_key: string; cap: s
 
 beforeAll(async () => {
   pg = new PGlite();
-  await pg.exec(identityDdl);
-  await pg.exec(ledgerDdl);
-  await pg.exec(allowanceDdl);
+  // Everything before 0007, so the seed below lands in the shape 0007 expects to find.
+  await applyMigrations(pg, { through: '0006_regular_rawhide_kid' });
 
   await pg.exec(`
     insert into app_user (id, timezone, currency_code, period_anchor_date, onboarding_step)
@@ -72,7 +68,7 @@ beforeAll(async () => {
       ('${RENT_BUDGET}', '${USER}', '${RENT}', 200000, 'AUD', true, '2026-08-20T02:00:00Z', '2026-08-20T02:00:00Z');
   `);
 
-  await pg.exec(capsDdl);
+  await applyMigration(pg, '0007_category_period_cap');
 }, 60_000);
 
 afterAll(async () => {
