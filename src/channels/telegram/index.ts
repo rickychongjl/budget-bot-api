@@ -18,8 +18,14 @@
  *   render.ts            plain-text rendering, refusal copy, keyboards, pagination
  *   gateway-repository.ts  the port; `DrizzleGatewayRepository` implements it
  *
- * Still to land: the nine product commands (4C) and the free-text path into M6 (4D).
- * The dispatcher's `freeText` dependency is the seam 4D fills; routing does not change.
+ * Landed in stage 4C (the command catalogue):
+ *   commands/            `/start`, `/today`, `/budget`, `/stats`, `/history`,
+ *                        `/delete`, `/categories`, `/remind`, `/settings` — one file
+ *                        each, each calling the owning core service and rendering the
+ *                        result. The catalogue is now all sixteen commands.
+ *
+ * Still to land: the free-text path into M6 (4D). The dispatcher's `freeText`
+ * dependency is the seam 4D fills; routing does not change.
  *
  * Wiring (composition root, `src/index.ts`):
  *   const telegramApi = new TelegramApiClient({ token: env.TELEGRAM_BOT_TOKEN, logger });
@@ -51,6 +57,8 @@ export type {
 } from './command-router';
 
 export { createCatalogue, UNKNOWN_COMMAND } from './commands/catalogue';
+/** The `hist:` callback and `/history` itself render through one function. */
+export { historyPage } from './commands/history';
 
 export { parseUpdate } from './update-parser';
 export type { TelegramEvent, TelegramSender } from './update-parser';
@@ -63,11 +71,21 @@ export type {
 } from './gateway-repository';
 
 export {
+  CATEGORY_USAGE,
   MAX_INLINE_OPTIONS,
   TELEGRAM_MAX_MESSAGE,
+  formatShortDate,
+  historyCallbackData,
   paginate,
+  parseHistoryCallbackData,
   refusalText,
   renderAccountSummary,
+  renderBudgetList,
+  renderCategoryList,
+  renderHistoryPage,
   renderOnboardingReply,
   renderRefusal,
+  renderSettings,
+  renderStats,
 } from './render';
+export type { BudgetLine, CategoryLine, HistoryLine, StatsLine } from './render';

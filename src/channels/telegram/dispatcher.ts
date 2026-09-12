@@ -1,3 +1,6 @@
+import type { DailyAllowanceService } from '../../core/allowance/allowance-service';
+import type { ReminderSelectionService } from '../../core/allowance/reminder-selection-service';
+import type { BudgetService } from '../../core/budgets/budget-service';
 import { isEntitlementRefusal } from '../../core/entitlements/entitlement-service';
 import type { EntitlementService } from '../../core/entitlements/entitlement-service';
 import type { ChannelConnectionDirectory } from '../../core/identity/channel-connection-directory';
@@ -5,6 +8,8 @@ import type { IdentityService, ResolvedUser } from '../../core/identity/identity
 import type { OnboardingInput, OnboardingService } from '../../core/identity/onboarding';
 import { ONBOARDING_STEPS } from '../../core/identity/onboarding-step';
 import type { OnboardingStep } from '../../core/identity/onboarding-step';
+import type { CategoryService } from '../../core/ledger/category-service';
+import type { LedgerService } from '../../core/ledger/ledger-service';
 import type { Clock } from '../../core/shared/clock';
 import type { Instant, UserId } from '../../core/shared/common';
 import { RefusalError } from '../../core/shared/errors';
@@ -13,9 +18,16 @@ import type { Logger } from '../../observability/log';
 import type { CommandHandler, CommandRouter, CommandServices } from './command-router';
 import { parseCommand } from './command-router';
 import { UNKNOWN_COMMAND } from './commands/catalogue';
+import { historyPage } from './commands/history';
 import type { GatewayRepository } from './gateway-repository';
-import { paginate, parseOnboardingCallbackData, renderOnboardingReply, renderRefusal } from './render';
-import type { TelegramEvent } from './update-parser';
+import {
+  paginate,
+  parseHistoryCallbackData,
+  parseOnboardingCallbackData,
+  renderOnboardingReply,
+  renderRefusal,
+} from './render';
+import type { TelegramEvent, TelegramSender } from './update-parser';
 
 /** Every event except the ones the parser already decided are not for us. */
 type RoutableEvent = Exclude<TelegramEvent, { kind: 'unsupported' }>;
@@ -44,8 +56,14 @@ type RoutableEvent = Exclude<TelegramEvent, { kind: 'unsupported' }>;
  * step"), and every failure ends in exactly one apology.
  */
 
-/** M2's two surfaces, as this module uses them. */
-export type IdentityCollaborator = Pick<IdentityService, 'resolve'> &
+/**
+ * M2's surfaces, as this module uses them.
+ *
+ * `resolve` and `deactivateConnection` are the dispatcher's own; `register` and
+ * `getSettings` are the command handlers', passed straight through. One collaborator
+ * rather than two fields, because they are one module.
+ */
+export type IdentityCollaborator = Pick<IdentityService, 'resolve' | 'register' | 'getSettings'> &
   Pick<ChannelConnectionDirectory, 'deactivateConnection'>;
 
 /** Acknowledging a callback query is a Telegram-transport concern, not a routing one. */
@@ -67,6 +85,12 @@ export interface DispatcherDeps {
   identity: IdentityCollaborator;
   entitlements: EntitlementService;
   onboarding: OnboardingService;
+  /** The four M3/M4/M5 contracts the 4C handlers call. The dispatcher itself uses none of them. */
+  categories: CategoryService;
+  budgets: BudgetService;
+  ledger: LedgerService;
+  allowance: DailyAllowanceService;
+  reminders: ReminderSelectionService;
   gateway: GatewayRepository;
   router: CommandRouter;
   sender: MessageSender;
@@ -151,7 +175,7 @@ export class TelegramDispatcher {
 
     if (resolved === null) {
       if (command !== null && !command.requiresAccount) {
-        return this.runCommand(command, parsed, null, now);
+        return this.runCommand(command, parsed, event.sender, null, now);
       }
       // Pre-registration senders are not rate-limited: `usage_counter` is keyed on a
       // `user_id` that does not exist yet. `inbound_update` still stops a Telegram
@@ -182,7 +206,7 @@ export class TelegramDispatcher {
     // 6. A known command wins over an open prompt (M11's revision).
     if (parsed !== null) {
       if (command === null) return { text: UNKNOWN_COMMAND };
-      return this.runCommand(command, parsed, resolved.userId, now);
+      return this.runCommand(command, parsed, event.sender, resolved.userId, now);
     }
 
     // 7. Still signing up: every message is an answer to the current step.
@@ -242,24 +266,49 @@ export class TelegramDispatcher {
       return renderOnboardingReply(reply);
     }
 
-    // `pc:`, `map:`, `cat:`, `hist:` prefixes arrive in 4C/4D. Until their handlers
-    // exist, a press is stale by definition rather than silently ignored.
+    // `/history`'s More button — the one callback prefix stage 4C introduces. It routes
+    // to the same function the command itself uses, so a continued page can never
+    // render differently from the page it continues. M3 scopes the read to this user,
+    // so a replayed or forged cursor can still only return the presser's own rows.
+    const cursor = parseHistoryCallbackData(data);
+    if (cursor !== null) {
+      return historyPage(this.commandServices(), resolved.userId, cursor);
+    }
+
+    // `pc:` and `map:` arrive in 4D. Until their handlers exist, a press is stale by
+    // definition rather than silently ignored.
     this.deps.logger.log('info', 'telegram.callback.unrouted', { prefix: data.split(':')[0] ?? '' });
     return renderRefusal('STALE_ACTION');
+  }
+
+  /**
+   * The command handlers' view of the application. Assembled here rather than held as
+   * a field so there is exactly one place that decides what a handler may reach for.
+   */
+  private commandServices(): CommandServices {
+    return {
+      identity: this.deps.identity,
+      onboarding: this.deps.onboarding,
+      entitlements: this.deps.entitlements,
+      categories: this.deps.categories,
+      budgets: this.deps.budgets,
+      ledger: this.deps.ledger,
+      allowance: this.deps.allowance,
+      reminders: this.deps.reminders,
+      gateway: this.deps.gateway,
+      supportContact: this.deps.supportContact,
+    };
   }
 
   private async runCommand(
     handler: CommandHandler,
     parsed: ReturnType<typeof parseCommand>,
+    sender: TelegramSender,
     userId: UserId | null,
     now: Instant,
   ): Promise<OutboundMessage> {
-    const services: CommandServices = {
-      entitlements: this.deps.entitlements,
-      gateway: this.deps.gateway,
-      supportContact: this.deps.supportContact,
-    };
     return handler.handle({
+      sender,
       userId,
       requireUserId: () => {
         if (userId === null) throw new RefusalError('ONBOARDING_REQUIRED');
@@ -268,7 +317,7 @@ export class TelegramDispatcher {
       args: parsed?.args ?? [],
       rest: parsed?.rest ?? '',
       now,
-      services,
+      services: this.commandServices(),
       router: this.deps.router,
     });
   }

@@ -4,6 +4,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DrizzleMerchantMappingRepository } from '../../src/infrastructure/database/repositories/drizzle-merchant-mapping-repository';
 import { DrizzleParseEventRepository } from '../../src/infrastructure/database/repositories/drizzle-parse-event-repository';
+import { applyMigrations } from '../support/pglite-migrations';
 
 /**
  * M9 checklist 3: "Confirm `parse_event.user_id`'s `on delete set null` actually
@@ -12,52 +13,11 @@ import { DrizzleParseEventRepository } from '../../src/infrastructure/database/r
  * (insert/returning, upsert, markUsed) against real constraints.
  *
  * Runs in-process on PGlite (real Postgres, WASM) so it needs no Neon branch. The
- * DDL below is what `drizzle-kit generate` produces from `src/db/schema/
- * {observability,merchant}.ts` (verified 2026-09-06 with a local `app_user` stub —
- * see the M6 build-log); `app_user` is a minimal stand-in for M2's table with only
- * the columns this test touches. The committed migration itself is generated after
- * M2 merges (merge order — build-log open question 1).
+ * schema is the **committed migrations, applied in journal order** — including M2's
+ * real `app_user`, whose `on delete` behaviour is the thing under test. (Until 12 Sep
+ * this file carried a hand-copied DDL block with a stub `app_user`, verified against
+ * `drizzle-kit generate` on 6 Sep and never again.)
  */
-const DDL = `
-create table app_user (
-  id uuid primary key default gen_random_uuid(),
-  timezone text not null,
-  created_at timestamptz not null default now()
-);
-create table "parse_event" (
-  "id" uuid primary key default gen_random_uuid() not null,
-  "user_id" uuid,
-  "route" text not null,
-  "model" text,
-  "input_tokens" integer,
-  "output_tokens" integer,
-  "latency_ms" integer,
-  "needed_clarification" boolean default false not null,
-  "was_corrected" boolean default false not null,
-  "created_at" timestamp with time zone default now() not null,
-  constraint "parse_event_route_check" check ("parse_event"."route" in ('command','mechanical','mapping','llm'))
-);
-create table "merchant_category_mapping" (
-  "id" uuid primary key default gen_random_uuid() not null,
-  "user_id" uuid not null,
-  "normalized_merchant" text not null,
-  "display_merchant" text not null,
-  "category_id" uuid not null,
-  "source" text not null,
-  "times_used" integer default 0 not null,
-  "created_at" timestamp with time zone default now() not null,
-  "updated_at" timestamp with time zone default now() not null,
-  "last_used_at" timestamp with time zone,
-  constraint "merchant_category_mapping_user_merchant" unique("user_id","normalized_merchant"),
-  constraint "merchant_category_mapping_source_check" check ("merchant_category_mapping"."source" in ('user_confirmed','user_corrected'))
-);
-alter table "parse_event" add constraint "parse_event_user_id_app_user_id_fk"
-  foreign key ("user_id") references "app_user"("id") on delete set null on update no action;
-alter table "merchant_category_mapping" add constraint "merchant_category_mapping_user_id_app_user_id_fk"
-  foreign key ("user_id") references "app_user"("id") on delete cascade on update no action;
-create index "parse_event_created" on "parse_event" using btree ("created_at");
-create index "merchant_category_mapping_user" on "merchant_category_mapping" using btree ("user_id");
-`;
 
 describe('parse_event / merchant_category_mapping against a real Postgres (PGlite)', () => {
   const pg = new PGlite();
@@ -69,7 +29,7 @@ describe('parse_event / merchant_category_mapping against a real Postgres (PGlit
   let userId: string;
 
   beforeAll(async () => {
-    await pg.exec(DDL);
+    await applyMigrations(pg);
     const rows = await db.execute(sql`insert into app_user (timezone) values ('Australia/Brisbane') returning id`);
     userId = (rows.rows[0] as { id: string }).id;
   }, 60_000);

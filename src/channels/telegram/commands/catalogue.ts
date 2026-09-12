@@ -5,25 +5,46 @@ import {
   subscriptionCommand,
   upgradeCommand,
 } from './billing';
+import { budgetCommand } from './budget';
 import { cancelCommand } from './cancel';
+import { categoriesCommand } from './categories';
+import { deleteCommand } from './delete';
 import { exportCommand } from './export';
 import { helpCommand } from './help';
+import { historyCommand } from './history';
+import { remindCommand } from './remind';
+import { settingsCommand } from './settings';
+import { startCommand } from './start';
+import { statsCommand } from './stats';
+import { todayCommand } from './today';
 
 /**
- * The command catalogue as it stands after stage 4B.
+ * The command catalogue — all sixteen, as approved by Ricky on 11 Sep 2026.
  *
- * 4B ships the cheapest end-to-end proof that the spine works: `/help`, `/cancel`, the
- * one true stub (`/export`), and the billing quartet — each either needs no other
- * module or needs only M8's tier. The nine product commands (`/start`, `/today`,
- * `/budget`, `/categories`, `/settings`, `/stats`, `/delete`, `/remind`, `/history`)
- * land in stage 4C, one file each, and register themselves here.
+ * Stage 4C completed it: the nine product commands joined 4B's spine set. One table is
+ * simultaneously the router, `/help`'s source, and (stage 4E) the list handed to
+ * `setMyCommands`, which is what stops the registered `/` menu from drifting away from
+ * the handlers that exist — M11's DoD line, "catalogue reflects what was implemented".
  *
- * Until then an unlisted command gets `UNKNOWN_COMMAND` rather than a stub that
- * pretends to be implemented, and `setMyCommands` is not called until 4E — so nothing
- * advertises a command that does not exist yet. Registration order is menu order.
+ * **Registration order is menu order**, and it is deliberate rather than alphabetical:
+ * `/start` first because it is the only way in, then the commands used daily, then the
+ * management route, then the one true stub. Alphabetising would bury `/start` between
+ * `/settings` and `/stats`.
+ *
+ * `/export` is still the only stub, and its description says "coming soon" so the menu
+ * does not advertise something that cannot do anything.
  */
 export function createCatalogue(): CommandRouter {
   return new CommandRouter([
+    startCommand,
+    todayCommand,
+    budgetCommand,
+    statsCommand,
+    historyCommand,
+    deleteCommand,
+    categoriesCommand,
+    remindCommand,
+    settingsCommand,
     helpCommand,
     cancelCommand,
     subscriptionCommand,

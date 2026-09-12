@@ -1,7 +1,15 @@
+import type { DailyAllowanceService } from '../../core/allowance/allowance-service';
+import type { ReminderSelectionService } from '../../core/allowance/reminder-selection-service';
+import type { BudgetService } from '../../core/budgets/budget-service';
 import type { EntitlementService } from '../../core/entitlements/entitlement-service';
+import type { IdentityService } from '../../core/identity/identity-service';
+import type { OnboardingService } from '../../core/identity/onboarding';
+import type { CategoryService } from '../../core/ledger/category-service';
+import type { LedgerService } from '../../core/ledger/ledger-service';
 import type { Instant, UserId } from '../../core/shared/common';
 import type { OutboundMessage } from '../../core/shared/messaging';
 import type { GatewayRepository } from './gateway-repository';
+import type { TelegramSender } from './update-parser';
 
 /**
  * The command catalogue: one table that is simultaneously the router, the source for
@@ -14,8 +22,15 @@ import type { GatewayRepository } from './gateway-repository';
  * user sees, it belongs somewhere else").
  */
 
-/** What a handler is given. Deliberately narrow — it grows as 4C's handlers land. */
+/** What a handler is given. */
 export interface CommandContext {
+  /**
+   * Who sent the update, in Telegram's terms. Only `/start` uses it — `register`
+   * needs an `externalId` and a `chatId`, and a handler reached before an account
+   * exists has no `userId` to work from. Every other handler works from `userId`;
+   * a Telegram identifier must not travel further into the application than this.
+   */
+  sender: TelegramSender;
   /** Null only for a sender with no account yet; a handler with `requiresAccount` never sees null. */
   userId: UserId | null;
   /**
@@ -35,8 +50,32 @@ export interface CommandContext {
   router: CommandRouter;
 }
 
+/**
+ * M2, as the command handlers use it. `register` is `/start`'s; `getSettings` is how
+ * almost every other handler learns the user's currency before rendering a figure.
+ */
+export type CommandIdentity = Pick<IdentityService, 'getSettings' | 'register'>;
+
+/** M2's onboarding machine. The dispatcher owns `answer`; `/start` owns `start`. */
+export type CommandOnboarding = Pick<OnboardingService, 'start'>;
+
+/**
+ * Every core service a handler may call, and nothing else.
+ *
+ * Each one is the owning module's *public contract*, never a repository and never a
+ * concrete class: a handler's whole job is to call the module that owns the decision
+ * and render what comes back. If a handler ever needs something not on this list,
+ * that is the signal the behaviour belongs in a core module rather than here.
+ */
 export interface CommandServices {
+  identity: CommandIdentity;
+  onboarding: CommandOnboarding;
   entitlements: EntitlementService;
+  categories: CategoryService;
+  budgets: BudgetService;
+  ledger: LedgerService;
+  allowance: DailyAllowanceService;
+  reminders: ReminderSelectionService;
   gateway: GatewayRepository;
   /** `env.SUPPORT_CONTACT` — shown by `/paysupport`. */
   supportContact: string;

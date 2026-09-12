@@ -115,6 +115,20 @@ export interface AllowanceWrites {
   /** Retryable failure: rows stay `pending`, attempts + 1. Returns the new attempt count. */
   incrementAttempts(ids: readonly Id[]): Promise<number>;
 
+  /**
+   * Rewrite the frozen target on an existing row — the one write that moves it. Only
+   * `DefaultAllowanceService.capChanged` calls this, and only for the user's current
+   * local date: a cap change is the single event allowed to touch a persisted target
+   * (M5, "Why the morning target is persisted"). Delivery state is left exactly as it
+   * was — a `sent` row stays `sent`, so the bundle is never delivered twice.
+   */
+  updateTarget(
+    userId: UserId,
+    categoryId: Id,
+    localDate: LocalDate,
+    dailyTarget: MinorUnits,
+  ): Promise<void>;
+
   setReminderEnabled(userId: UserId, categoryId: Id, enabled: boolean): Promise<void>;
 }
 

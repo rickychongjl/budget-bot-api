@@ -26,7 +26,14 @@ export interface Period {
   end: LocalDate;
 }
 
-/** The frozen per-period snapshot — a denominator that cannot shift mid-period. */
+/**
+ * A materialised cycle for one budget, with the cap that governs it. `capMinorUnits` is
+ * **not a column** — it is resolved from `category_period_cap` every time the period is
+ * read (the row with the greatest key at or before this one), so a cycle opened late by
+ * a backdated expense carries the cap that applied *then*, not the cap of the day it was
+ * opened. For the current cycle that is the cap as it stands now; for a past cycle it is
+ * immutable, because rows are only ever written for the cycle that is current.
+ */
 export interface BudgetPeriod {
   id: Id;
   userId: UserId;
@@ -38,14 +45,33 @@ export interface BudgetPeriod {
   createdAt: Instant;
 }
 
-/** The standing rule — the cap for a category as it stands right now. */
+/**
+ * The standing rule — this category is budgeted. **The amount is not here** (Ricky,
+ * 12 Sep 2026), nor its currency; both live per cycle in `category_period_cap`, read
+ * through `currentBudgets` or a `BudgetPeriod`. This row is what M5/M8 count and what
+ * a `budget_period` hangs off.
+ */
 export interface Budget {
   id: Id;
   userId: UserId;
   categoryId: Id | null;
-  capMinorUnits: MinorUnits;
-  currencyCode: CurrencyCode;
   isActive: boolean;
+  createdAt: Instant;
+  updatedAt: Instant;
+}
+
+/**
+ * One row of the cap history: from cycle `periodKey` on, the category's cap is
+ * `capMinorUnits` — null for "the budget was removed in this cycle" — until a row with
+ * a later key supersedes it.
+ */
+export interface PeriodCap {
+  userId: UserId;
+  categoryId: Id;
+  periodKey: string;
+  capMinorUnits: MinorUnits | null;
+  /** What the cap is denominated in — the account's currency when the row was written. */
+  currencyCode: CurrencyCode;
   createdAt: Instant;
   updatedAt: Instant;
 }
@@ -66,19 +92,27 @@ export interface BudgetUserSettings {
 export type BudgetSettingsReader = (userId: UserId) => Promise<BudgetUserSettings>;
 
 /**
- * One category's budget as the user experiences it right now — the standing rule and
- * the current cycle's frozen snapshot side by side. They differ only when a period was
- * materialised under a cap that has since been superseded, which is exactly the case
- * M4's checklist step 7 says to show both figures for.
+ * M5's side of the one coupling a cap change creates (Ricky, 11 Sep: a raise today
+ * gives you more to spend today). `DefaultAllowanceService` satisfies this
+ * structurally. Optional in the composition root, and called only after M4's own
+ * writes have completed — a failure here never fails the user's `/budget`; the cap is
+ * the system of record and today's figure is a downstream effect. Same shape as M3's
+ * `AllowanceNotifier`.
+ */
+export interface BudgetAllowanceNotifier {
+  /** Re-price today's persisted daily target for the category from its new cap. */
+  capChanged(userId: UserId, categoryId: Id): Promise<void>;
+}
+
+/**
+ * One category's budget as the user experiences it right now: the standing rule, the
+ * cycle it sits in, and the cap governing that cycle. There is one figure, not two —
+ * `setCap` writes the current cycle's row, so "my budget is 600 now" means now.
  */
 export interface BudgetView {
   budget: Budget;
   period: Period;
-  /**
-   * Null when nothing has been logged in this cycle yet, so no snapshot exists. A
-   * missing row means "the cap applies, nothing spent" — never an error (M4's tests).
-   */
-  snapshotCapMinorUnits: MinorUnits | null;
+  capMinorUnits: MinorUnits;
 }
 
 /**
@@ -90,7 +124,9 @@ export interface PeriodMaterialiser<X> {
   /**
    * The `budget_period` covering `localDate` for whichever active budget owns
    * `categoryId`, materialising it if needed — or null when the category has no active
-   * budget, in which case the transaction is recorded with a null `budget_period_id`.
+   * budget **or had no cap in that cycle** (a backdated expense into a cycle before the
+   * budget existed), in which case the transaction is recorded with a null
+   * `budget_period_id`: uncapped then, so not counted against a cap now.
    *
    * `executor` binds the write to the caller's open transaction.
    */
@@ -105,19 +141,30 @@ export interface PeriodMaterialiser<X> {
 export interface BudgetService {
   periodFor(userId: UserId, localDate: LocalDate): Promise<Period>;
 
-  /** Upsert-then-select on `(budget_id, period_key)`; race-safe at a boundary. */
+  /**
+   * Upsert-then-select on `(budget_id, period_key)`; race-safe at a boundary. Refuses
+   * a cycle the budget's category carried no cap in — callers materialise the current
+   * cycle of an active budget, which always has one.
+   */
   ensurePeriod(userId: UserId, budgetId: Id, localDate: LocalDate): Promise<BudgetPeriod>;
 
+  /** The standing rules only — no amounts. Use `currentBudgets` for the caps. */
   activeBudgets(userId: UserId): Promise<readonly Budget[]>;
 
   /**
    * `/budget` with no arguments: every active budget with the cycle it sits in and
-   * that cycle's snapshot, for `localDate` (the user's today). Materialises nothing.
+   * the cap governing that cycle, for `localDate` (the user's today). Materialises
+   * nothing.
    */
   currentBudgets(userId: UserId, localDate: LocalDate): Promise<readonly BudgetView[]>;
 
-  /** Writes the standing `budget` and the current period's snapshot; never a past one. */
+  /**
+   * Writes the standing `budget` and the **current cycle's** cap row. Every later cycle
+   * reads that row until a later one supersedes it — the carry-forward; every earlier
+   * cycle is untouched.
+   */
   setCap(userId: UserId, categoryId: Id, cap: MinorUnits): Promise<Budget>;
 
+  /** `is_active = false`, plus a null cap row for the current cycle so nothing carries forward. */
   deactivate(userId: UserId, budgetId: Id): Promise<void>;
 }

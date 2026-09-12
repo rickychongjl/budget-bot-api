@@ -61,10 +61,19 @@ describe('ensurePeriod', () => {
     });
   });
 
-  it('snapshots the standing cap as it was at materialisation', async () => {
+  it('carries the cap governing that cycle — resolved from the history, not stored on the row', async () => {
     const budget = await budgets.setCap(USER, GROCERIES, 60_000n);
     const september = await budgets.ensurePeriod(USER, budget.id, '2026-09-10');
     expect(september.capMinorUnits).toBe(60_000n);
+    expect(store.periods[0]).not.toHaveProperty('capMinorUnits');
+  });
+
+  it('refuses a cycle from before the category carried any cap, and materialises nothing', async () => {
+    const budget = await budgets.setCap(USER, GROCERIES, 60_000n); // September's row
+    await expect(budgets.ensurePeriod(USER, budget.id, '2026-08-20')).rejects.toMatchObject({
+      code: 'RESOURCE_NOT_FOUND',
+    });
+    expect(store.periods).toHaveLength(0);
   });
 
   it('is RESOURCE_NOT_FOUND for a budget that is not the caller"s', async () => {
@@ -91,6 +100,14 @@ describe('ensurePeriodForCategory — M3"s seam', () => {
     await budgets.deactivate(USER, budget.id);
     expect(await budgets.ensurePeriodForCategory(USER, GROCERIES, '2026-09-10', store)).toBeNull();
   });
+
+  it('is null for a cycle before the budget existed — the expense was uncapped then', async () => {
+    // A cap set in September, an expense backdated into August. The old per-row
+    // snapshot stamped September's cap onto August; the history says August had none.
+    await budgets.setCap(USER, GROCERIES, 60_000n);
+    expect(await budgets.ensurePeriodForCategory(USER, GROCERIES, '2026-08-20', store)).toBeNull();
+    expect(store.periods).toHaveLength(0);
+  });
 });
 
 describe('setCap', () => {
@@ -100,21 +117,45 @@ describe('setCap', () => {
 
     expect(second.id).toBe(first.id);
     expect(store.budgets).toHaveLength(1);
-    expect(second.capMinorUnits).toBe(65_000n);
+    expect((await budgets.currentBudgets(USER, '2026-09-10'))[0]?.capMinorUnits).toBe(65_000n);
   });
 
-  it('updates the current period"s snapshot but leaves past periods byte-for-byte', async () => {
-    const budget = await budgets.setCap(USER, GROCERIES, 60_000n);
-    const august = await budgets.ensurePeriod(USER, budget.id, '2026-08-20');
-    const september = await budgets.ensurePeriod(USER, budget.id, '2026-09-10');
+  it('two changes in one cycle leave one governing row — the later write', async () => {
+    await budgets.setCap(USER, GROCERIES, 60_000n);
+    await budgets.setCap(USER, GROCERIES, 65_000n);
+    expect(store.periodCaps).toEqual([expect.objectContaining({ periodKey: '2026-09', capMinorUnits: 65_000n })]);
+  });
 
-    await budgets.setCap(USER, GROCERIES, 45_000n);
+  it('governs the current cycle and every later one, and leaves earlier cycles alone', async () => {
+    clock.set('2026-08-20T02:00:00Z');
+    const budget = await budgets.setCap(USER, GROCERIES, 60_000n); // August's row
+    await budgets.ensurePeriod(USER, budget.id, '2026-08-20');
+    clock.set('2026-09-10T02:00:00Z');
+    expect((await budgets.ensurePeriod(USER, budget.id, '2026-09-10')).capMinorUnits).toBe(60_000n); // carried forward
 
-    const augustAfter = store.periods.find((p) => p.id === august.id);
-    const septemberAfter = store.periods.find((p) => p.id === september.id);
-    expect(augustAfter).toEqual(august);
-    expect(augustAfter?.capMinorUnits).toBe(60_000n);
-    expect(septemberAfter?.capMinorUnits).toBe(45_000n);
+    await budgets.setCap(USER, GROCERIES, 45_000n); // September's row
+
+    expect((await budgets.ensurePeriod(USER, budget.id, '2026-08-20')).capMinorUnits).toBe(60_000n);
+    expect((await budgets.ensurePeriod(USER, budget.id, '2026-09-10')).capMinorUnits).toBe(45_000n);
+    expect(store.periodCaps.map((c) => [c.periodKey, c.capMinorUnits])).toEqual([
+      ['2026-08', 60_000n],
+      ['2026-09', 45_000n],
+    ]);
+    expect(store.periods).toHaveLength(2); // the change wrote no period row
+  });
+
+  it('a cycle nobody touched still reads the cap that applied to it when opened late', async () => {
+    // The August case (Ricky, 11–12 Sep). July: 1000. August: nothing logged, no
+    // /today, no /stats, no reminder — no row of any kind. September: raised to 1200.
+    // Then an expense backdated into August. The old snapshot stamped August at 1200.
+    clock.set('2026-07-15T02:00:00Z');
+    await budgets.setCap(USER, GROCERIES, 100_000n);
+    clock.set('2026-09-10T02:00:00Z');
+    await budgets.setCap(USER, GROCERIES, 120_000n);
+
+    const august = await budgets.ensurePeriodForCategory(USER, GROCERIES, '2026-08-20', store);
+    expect(august?.capMinorUnits).toBe(100_000n);
+    expect((await budgets.ensurePeriodForCategory(USER, GROCERIES, '2026-09-10', store))?.capMinorUnits).toBe(120_000n);
   });
 
   it('a period materialised after the change picks up the new standing cap', async () => {
@@ -128,9 +169,10 @@ describe('setCap', () => {
     expect(october.capMinorUnits).toBe(45_000n);
   });
 
-  it('writes nothing to a snapshot that has not been materialised yet', async () => {
+  it('writes the cycle"s cap row but materialises no period of its own', async () => {
     await budgets.setCap(USER, GROCERIES, 60_000n);
     expect(store.periods).toHaveLength(0);
+    expect(store.periodCaps).toHaveLength(1);
   });
 
   it('refuses a cap of zero or less', async () => {
@@ -138,9 +180,10 @@ describe('setCap', () => {
     await expect(budgets.setCap(USER, GROCERIES, -1n)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
   });
 
-  it('denominates the cap in the user"s currency', async () => {
+  it('denominates the cap row in the user"s currency', async () => {
     settings = { ...settings, currencyCode: 'NZD' };
-    expect((await budgets.setCap(USER, GROCERIES, 60_000n)).currencyCode).toBe('NZD');
+    await budgets.setCap(USER, GROCERIES, 60_000n);
+    expect(store.periodCaps).toEqual([expect.objectContaining({ capMinorUnits: 60_000n, currencyCode: 'NZD' })]);
   });
 
   /** 5 Sep decision: budgets are independent of which categories carry a reminder. */
@@ -148,6 +191,53 @@ describe('setCap', () => {
     await budgets.setCap(USER, GROCERIES, 60_000n);
     await budgets.setCap(USER, TRANSPORT, 20_000n);
     expect((await budgets.activeBudgets(USER)).map((b) => b.categoryId)).toEqual([GROCERIES, TRANSPORT]);
+  });
+});
+
+describe('setCap tells M5 (Ricky, 11 Sep: a raise today is spendable today)', () => {
+  let notified: [string, string][];
+  let failNext: boolean;
+
+  beforeEach(() => {
+    notified = [];
+    failNext = false;
+    budgets = new DefaultBudgetService({
+      repository,
+      settingsOf: async () => settings,
+      clock,
+      allowance: {
+        capChanged: async (userId, categoryId) => {
+          if (failNext) throw new Error('M5 is down');
+          notified.push([userId, categoryId]);
+        },
+      },
+    });
+  });
+
+  it('after the current cycle"s snapshot has moved', async () => {
+    const budget = await budgets.setCap(USER, GROCERIES, 60_000n);
+    await budgets.ensurePeriod(USER, budget.id, '2026-09-10');
+
+    await budgets.setCap(USER, GROCERIES, 90_000n);
+
+    expect(notified).toEqual([[USER, GROCERIES]]);
+  });
+
+  it('not when no snapshot exists — there is no row for M5 to re-price', async () => {
+    await budgets.setCap(USER, GROCERIES, 60_000n);
+    await budgets.setCap(USER, GROCERIES, 90_000n);
+    expect(notified).toEqual([]);
+  });
+
+  it('only after both M4 rows are written, and M5 failing never fails the cap change', async () => {
+    const budget = await budgets.setCap(USER, GROCERIES, 60_000n);
+    const period = await budgets.ensurePeriod(USER, budget.id, '2026-09-10');
+
+    failNext = true;
+    await expect(budgets.setCap(USER, GROCERIES, 90_000n)).resolves.toMatchObject({ id: budget.id });
+
+    expect((await budgets.ensurePeriod(USER, budget.id, '2026-09-10')).capMinorUnits).toBe(90_000n);
+    expect(store.periods.map((p) => p.id)).toEqual([period.id]);
   });
 });
 
@@ -159,8 +249,33 @@ describe('deactivate', () => {
     await budgets.deactivate(USER, budget.id);
 
     expect(await budgets.activeBudgets(USER)).toEqual([]);
-    expect(store.periods).toEqual([period]);
+    expect(store.periods.map((p) => p.id)).toEqual([period.id]);
     expect(store.budgets[0]).toMatchObject({ id: budget.id, isActive: false });
+  });
+
+  it('writes a null cap row so the old cap does not carry into cycles with no budget', async () => {
+    const budget = await budgets.setCap(USER, GROCERIES, 60_000n);
+    await budgets.deactivate(USER, budget.id);
+
+    expect(store.periodCaps).toEqual([expect.objectContaining({ periodKey: '2026-09', capMinorUnits: null })]);
+    clock.set('2026-10-10T02:00:00Z');
+    expect(await budgets.ensurePeriodForCategory(USER, GROCERIES, '2026-10-10', store)).toBeNull();
+  });
+
+  it('a budget re-added in a later cycle governs from that cycle only', async () => {
+    const first = await budgets.setCap(USER, GROCERIES, 60_000n); // September
+    await budgets.deactivate(USER, first.id); // September: none
+    clock.set('2026-11-10T02:00:00Z');
+    const second = await budgets.setCap(USER, GROCERIES, 30_000n); // November
+
+    expect((await budgets.ensurePeriod(USER, second.id, '2026-11-10')).capMinorUnits).toBe(30_000n);
+    await expect(budgets.ensurePeriod(USER, second.id, '2026-10-10')).rejects.toMatchObject({
+      code: 'RESOURCE_NOT_FOUND',
+    });
+    expect(store.periodCaps.map((c) => [c.periodKey, c.capMinorUnits])).toEqual([
+      ['2026-09', null],
+      ['2026-11', 30_000n],
+    ]);
   });
 
   it('frees the category to take a new budget afterwards', async () => {
@@ -179,15 +294,15 @@ describe('deactivate', () => {
 });
 
 describe('currentBudgets — `/budget` with no arguments', () => {
-  it('reports the current-period snapshot alongside the standing rule', async () => {
+  it('reports each active budget with the cap governing the current cycle', async () => {
     const budget = await budgets.setCap(USER, GROCERIES, 60_000n);
     await budgets.ensurePeriod(USER, budget.id, '2026-09-10');
 
     expect(await budgets.currentBudgets(USER, '2026-09-10')).toEqual([
       {
-        budget: expect.objectContaining({ id: budget.id, capMinorUnits: 60_000n }),
+        budget: expect.objectContaining({ id: budget.id }),
         period: { key: '2026-09', start: '2026-09-05', end: '2026-10-04' },
-        snapshotCapMinorUnits: 60_000n,
+        capMinorUnits: 60_000n,
       },
     ]);
   });
@@ -199,9 +314,14 @@ describe('currentBudgets — `/budget` with no arguments', () => {
   it('treats a period with no materialised row as the cap applying, not as an error', async () => {
     await budgets.setCap(USER, GROCERIES, 60_000n);
     const [view] = await budgets.currentBudgets(USER, '2026-11-11');
-    expect(view?.snapshotCapMinorUnits).toBeNull();
-    expect(view?.budget.capMinorUnits).toBe(60_000n);
+    expect(view?.capMinorUnits).toBe(60_000n); // September's row governs November
     expect(view?.period.key).toBe('2026-11');
+  });
+
+  it('is loud, not silent, if an active budget somehow has no governing cap', async () => {
+    await budgets.setCap(USER, GROCERIES, 60_000n);
+    store.periodCaps = []; // a broken backfill, say
+    await expect(budgets.currentBudgets(USER, '2026-09-10')).rejects.toThrow(/active but has no cap/);
   });
 
   it('materialises nothing of its own', async () => {

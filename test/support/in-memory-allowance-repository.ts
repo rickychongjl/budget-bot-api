@@ -9,7 +9,7 @@ import type {
   NewAllowanceSendInput,
   ReminderCategory,
 } from '../../src/core/allowance';
-import type { Id, Instant, LocalDate, UserId } from '../../src/core/shared/common';
+import type { Id, Instant, LocalDate, MinorUnits, UserId } from '../../src/core/shared/common';
 import { fakeId } from './fake-id';
 import type { InMemoryStore } from './in-memory-store';
 
@@ -116,6 +116,19 @@ export class InMemoryAllowanceRepository implements AllowanceRepository<InMemory
       return { ...s, attempts };
     });
     return highest;
+  }
+
+  async updateTarget(
+    userId: UserId,
+    categoryId: Id,
+    localDate: LocalDate,
+    dailyTarget: MinorUnits,
+  ): Promise<void> {
+    this.store.allowanceSends = this.store.allowanceSends.map((s) =>
+      s.userId === userId && s.categoryId === categoryId && s.localDate === localDate
+        ? { ...s, dailyTargetMinorUnits: dailyTarget }
+        : s,
+    );
   }
 
   async setReminderEnabled(_userId: UserId, categoryId: Id, enabled: boolean): Promise<void> {
