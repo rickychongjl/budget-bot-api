@@ -147,6 +147,7 @@ export function createDomainServices(clock: TestClock, settings: DomainSettings)
     repository: new InMemoryBudgetRepository(store),
     settingsOf,
     clock,
+    allowance: { capChanged: (...args) => services.allowance.capChanged(...args) },
   });
 
   services.allowance = new DefaultAllowanceService({

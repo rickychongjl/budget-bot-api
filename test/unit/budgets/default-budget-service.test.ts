@@ -151,6 +151,54 @@ describe('setCap', () => {
   });
 });
 
+describe('setCap tells M5 (Ricky, 11 Sep: a raise today is spendable today)', () => {
+  let notified: [string, string][];
+  let failNext: boolean;
+
+  beforeEach(() => {
+    notified = [];
+    failNext = false;
+    budgets = new DefaultBudgetService({
+      repository,
+      settingsOf: async () => settings,
+      clock,
+      allowance: {
+        capChanged: async (userId, categoryId) => {
+          if (failNext) throw new Error('M5 is down');
+          notified.push([userId, categoryId]);
+        },
+      },
+    });
+  });
+
+  it('after the current cycle"s snapshot has moved', async () => {
+    const budget = await budgets.setCap(USER, GROCERIES, 60_000n);
+    await budgets.ensurePeriod(USER, budget.id, '2026-09-10');
+
+    await budgets.setCap(USER, GROCERIES, 90_000n);
+
+    expect(notified).toEqual([[USER, GROCERIES]]);
+  });
+
+  it('not when no snapshot exists — there is no row for M5 to re-price', async () => {
+    await budgets.setCap(USER, GROCERIES, 60_000n);
+    await budgets.setCap(USER, GROCERIES, 90_000n);
+    expect(notified).toEqual([]);
+  });
+
+  it('only after both M4 rows are written, and M5 failing never fails the cap change', async () => {
+    const budget = await budgets.setCap(USER, GROCERIES, 60_000n);
+    const period = await budgets.ensurePeriod(USER, budget.id, '2026-09-10');
+
+    failNext = true;
+    await expect(budgets.setCap(USER, GROCERIES, 90_000n)).resolves.toMatchObject({
+      capMinorUnits: 90_000n,
+    });
+
+    expect(store.periods.find((p) => p.id === period.id)?.capMinorUnits).toBe(90_000n);
+  });
+});
+
 describe('deactivate', () => {
   it('drops the budget from the active list but keeps its historical snapshots', async () => {
     const budget = await budgets.setCap(USER, GROCERIES, 60_000n);

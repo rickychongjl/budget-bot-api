@@ -1725,3 +1725,92 @@ stage 4E, and production is the only environment (master plan §5.7).
 3. **`/history`'s page size (10) has never been seen on a real phone.** It is a guess
    that reads well in a test. Worth a look during 4E's manual walkthrough, when there is
    a real chat window to judge it in.
+
+## M4/M5 — A cap change is spendable today — 2026-09-11
+
+A follow-on to 4C, prompted by Ricky reviewing how `/budget` behaves mid-cycle. The
+mid-period change and the carry-forward to the next cycle were already exactly what he
+wanted (`setCap` moves the standing budget and the current snapshot together; a period
+materialised later snapshots the new standing cap). What he did not want was the
+*timing*: raise Food at 2pm and the daily figure only moved the following morning,
+because M5 freezes `daily_target` per date. **His call: a raise today gives you more to
+spend today.** Rewrite the row regardless of delivery status; never re-send.
+
+Core M4/M5 work, so it sits on its own branch rather than inside 4C.
+
+### Built
+
+- **`BudgetAllowanceNotifier`** (`core/budgets/budget-service.ts`) — M4's outgoing
+  port to M5, one method: `capChanged(userId, categoryId)`. Optional on
+  `DefaultBudgetService`, called from `setCap` only after both M4 rows are written and
+  only when the current cycle's snapshot existed (a day's target row references its
+  period, so there is nothing to re-price otherwise). Best-effort, swallowed on
+  failure, exactly as M3's `AllowanceNotifier` is: the cap is the system of record and
+  today's figure is a downstream effect that lands tomorrow anyway.
+- **`DefaultAllowanceService.capChanged`** — finds today's row, re-prices it from the
+  period's new cap and spend **to the end of yesterday**, writes it back through a new
+  `AllowanceWrites.updateTarget`. The target formula's inputs now come from one private
+  `targetFor`, shared by the first-of-the-day compute and the re-price, so the two
+  cannot disagree about what goes in.
+- **`updateTarget`** on the port, the Drizzle repository and the in-memory adapter.
+  Moves the one column; `delivery_status`, `attempts` and `sent_at` are untouched.
+- **`/budget <category> <amount>`** now confirms with the day's figure, fetched from
+  M5's `availableToday` and worded by M5's `renderAllowanceLine` — the same read and
+  the same sentence `/today` uses, so the two cannot differ. *"Food is now $960 a cycle.
+  You can spend $40 on Food today to stay on budget."* replaces *"The daily figure
+  updates tomorrow morning."*
+- **Cycle 3 in the composition root.** M5 already needed M4 (`ensurePeriod`); M4 now
+  needs M5. Broken with the same closure the other two cycles use.
+
+### The invariant, narrowed rather than dropped
+
+M5's rule was "never recomputed for that date". It is now **"never recomputed from
+that day's spend"** — M5's page, `daily-target.ts`, the schema comment and the service
+header all say so. The failure the rule exists to prevent is a lunchtime overspend
+smearing itself across the remaining days; a cap change is a different trigger, and
+the re-price still takes spend only to the end of yesterday. Consequences the tests
+pin down:
+
+- today's own spend is still measured *against* the re-priced target, so an overspend
+  stays visible as a negative number;
+- re-pricing twice on one day gives the same number — the inputs do not move during
+  the day;
+- a `sent` row is rewritten in place, stays `sent` with its `sent_at`, and a later tick
+  finds nothing outstanding — no second message;
+- no row for today means nothing is written, and the day's first read computes from
+  the new snapshot as before.
+
+### Decisions taken (Ricky, 11 Sep)
+
+- Mid-period cap changes are allowed and take effect this cycle; the new cap carries
+  forward to the next cycle. (Already the behaviour; confirmed.)
+- The extra is spread over the days left, not backfilled over days already gone.
+- No "just this month" override — every change is permanent going forward.
+- Rewrite today's row regardless of delivery status; never re-send the morning bundle.
+
+### Verification
+
+`npx tsc --noEmit` — clean, 0 errors.
+
+`npx vitest run` — **637 passed / 9 skipped** across 47 files (14 tests added: 8 in
+`test/unit/allowance/default-allowance-service.test.ts` replacing the one that asserted
+the old timing, 3 in `test/unit/budgets/`, 1 in `test/unit/telegram/commands/budget.test.ts`,
+3 in `test/integration/allowance.test.ts` on PGlite). **The 9 skipped are
+`test/integration/identity.test.ts` and `test/integration/entitlements.test.ts`, which
+need `DATABASE_URL` and were not executed in this environment** — neither touches
+anything this change modifies. No `db:generate`: no schema change; `updateTarget` is an
+`UPDATE` to an existing column.
+
+### Open questions
+
+- **Backdating into a cycle that never had a period row.** Discussed with Ricky the
+  same day, not yet decided. `materialisePeriod` stamps the *current* standing cap, so
+  an expense backdated into an earlier cycle that no read or write ever opened records
+  that cycle at today's cap. It needs three things to line up (no activity in that
+  category that cycle — including no `/today`, `/stats` or 07:00 reminder, all of which
+  materialise — then a cap change, then a backdated entry), and nothing shipped displays
+  a past cycle's cap. Options on the table: leave and log; a change-keyed cap-history
+  table; or a period-keyed table, which Ricky raised and which has the same lazy-creation
+  gap as `budget_period` itself. Also noted: `schema/budget.ts` says "superseded rows
+  stay for their snapshots" but `upsertActiveBudget` updates in place, so that comment is
+  stale whichever way this goes.

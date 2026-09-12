@@ -441,3 +441,47 @@ describe('findDueUsers — who is eligible', () => {
     expect(rows).toHaveLength(2);
   });
 });
+
+describe('updateTarget — the one write that moves a persisted target (11 Sep)', () => {
+  beforeEach(async () => {
+    await seedUser();
+    await seedCategory(USER);
+  });
+
+  it('rewrites the target on the existing row and leaves the delivery record alone', async () => {
+    const row = await repository.insertSend(insertInput({ dailyTargetMinorUnits: 2_000n }));
+    const sentAt = Date.parse('2026-09-09T21:00:00Z');
+    await repository.markSends([row.id], 'sent', sentAt);
+
+    await repository.updateTarget(USER, CATEGORY, '2026-09-10', 4_000n);
+
+    const after = await repository.findSend(USER, CATEGORY, '2026-09-10');
+    expect(after).toMatchObject({
+      id: row.id,
+      dailyTargetMinorUnits: 4_000n,
+      deliveryStatus: 'sent',
+      attempts: 0,
+    });
+    expect(after!.sentAt).toBe(sentAt);
+    expect(await countSends()).toBe(1);
+  });
+
+  it('is a no-op for a date with no row — it never creates one', async () => {
+    await repository.updateTarget(USER, CATEGORY, '2026-09-10', 4_000n);
+    expect(await countSends()).toBe(0);
+  });
+
+  it('touches only the named category and date', async () => {
+    const OTHER = '55555555-5555-4555-8555-555555555555';
+    await seedCategory(USER, { categoryId: OTHER, budgetId: '66666666-6666-4666-8666-666666666666', periodId: '77777777-7777-4777-8777-777777777777' });
+    await repository.insertSend(insertInput({ dailyTargetMinorUnits: 2_000n }));
+    await repository.insertSend(insertInput({ localDate: '2026-09-11', dailyTargetMinorUnits: 2_100n }));
+    await repository.insertSend(insertInput({ categoryId: OTHER, dailyTargetMinorUnits: 900n }));
+
+    await repository.updateTarget(USER, CATEGORY, '2026-09-10', 4_000n);
+
+    expect((await repository.findSend(USER, CATEGORY, '2026-09-10'))!.dailyTargetMinorUnits).toBe(4_000n);
+    expect((await repository.findSend(USER, CATEGORY, '2026-09-11'))!.dailyTargetMinorUnits).toBe(2_100n);
+    expect((await repository.findSend(USER, OTHER, '2026-09-10'))!.dailyTargetMinorUnits).toBe(900n);
+  });
+});

@@ -107,9 +107,11 @@ function periodFor(localDate: LocalDate, anchorDate: LocalDate): Period {
 The upsert matters: two concurrent messages at a period boundary would otherwise race. **There is deliberately no cron for this** — a nightly job opening periods for every user does work proportional to the whole user base to serve the few users active that day. A user who logs nothing in October simply has no October row; `/stats` for October must treat "no row" as "cap applies, nothing spent," not as an error.
 
 ## Changing a cap
-`/budget groceries 600` updates the standing `budget` **and** the current period's snapshot — the user means "my budget is 600 now," not "from next month." Past periods are untouched. The daily allowance recomputes against the new figure the **following morning**; it never retroactively rewrites today's already-persisted target (see M5).
+`/budget groceries 600` updates the standing `budget` **and** the current period's snapshot — the user means "my budget is 600 now," not "from next month." Past periods are untouched. "Now" includes today's daily figure (**Ricky, 11 Sep 2026** — a raise today should give you more to spend today): once both M4 rows are written, M4 tells M5 (`BudgetAllowanceNotifier.capChanged`) and M5 re-prices today's persisted target from the new cap and spend to the end of yesterday. The re-price never re-sends a reminder already delivered that morning; `/today` simply shows the new number. This is the single exception to M5's "never recomputed for that date" rule, and the only trigger for it — see M5, "Why the morning target is persisted".
 
-**Resolved 5 Sep — messaging when a cap is lowered below what's already spent this period:** the confirmation explicitly warns the user that the change doesn't retroactively affect transactions already made this period. If the category has a reminder enabled, no separate immediate notification goes out — the user simply sees the corrected figure in the next scheduled reminder run (M5).
+The notification is best-effort and runs after M4's own writes: M5 failing leaves the cap correct and today's figure catching up tomorrow, which is where it landed before the hook existed.
+
+**Resolved 5 Sep — messaging when a cap is lowered below what's already spent this period:** the confirmation explicitly warns the user that the change doesn't retroactively affect transactions already made this period. If the category has a reminder enabled, no separate immediate notification goes out — the user sees the corrected figure in the `/budget` confirmation and `/today` immediately (11 Sep), and in the next scheduled reminder run (M5).
 
 ## Public interface
 ```typescript

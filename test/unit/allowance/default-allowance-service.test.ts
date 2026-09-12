@@ -152,18 +152,124 @@ describe('the persisted target is frozen for the date', () => {
     expect(tomorrow!.dailyTarget).toBe(1_458n);
   });
 
-  it('a cap raised mid-cycle does not rewrite a target already written for today', async () => {
+});
+
+describe('a cap change is the one thing that re-prices today', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = createHarness();
+  });
+
+  it('a cap raised mid-cycle rewrites today"s target, so the raise is spendable today', async () => {
+    // Ricky, 11 Sep: "a raise today should give you more to spend today." The freeze
+    // above guards against recomputing from *spend*; a cap moving is a different
+    // trigger and does not reopen that hole — see the next test.
     const food = await h.seedCategory('Food', 50_000n);
-    await h.allowance.availableToday(USER, food);
+    const [before] = await h.allowance.availableToday(USER, food);
+    expect(before!.dailyTarget).toBe(2_000n);
 
     await h.budgets.setCap(USER, food, 100_000n);
 
-    const [afterRaise] = await h.allowance.availableToday(USER, food);
-    expect(afterRaise!.dailyTarget).toBe(2_000n); // the new cap lands tomorrow
+    const [after] = await h.allowance.availableToday(USER, food);
+    expect(after!.dailyTarget).toBe(4_000n); // $1,000 / 25 days, today
+    expect(after!.availableToday).toBe(4_000n);
+    expect(h.store.allowanceSends).toHaveLength(1); // rewritten in place, not a second row
+  });
+
+  it('the re-price still takes spend only to the end of yesterday, so an overspend stays visible', async () => {
+    const food = await h.seedCategory('Food', 50_000n);
+    await h.allowance.availableToday(USER, food);
+    await h.spend(food, 15_000n); // blow $150 at lunch
+
+    await h.budgets.setCap(USER, food, 100_000n);
+
+    const [after] = await h.allowance.availableToday(USER, food);
+    // Today's $150 is not in the target's inputs — it is measured *against* the target.
+    expect(after!.dailyTarget).toBe(4_000n);
+    expect(after!.availableToday).toBe(-11_000n);
+  });
+
+  it('counts earlier days of the cycle against the new cap', async () => {
+    const food = await h.seedCategory('Food', 50_000n);
+    await h.spend(food, 10_000n, '2026-09-08');
+    const [before] = await h.allowance.availableToday(USER, food);
+    expect(before!.dailyTarget).toBe(1_600n); // ($500 - $100) / 25
+
+    await h.budgets.setCap(USER, food, 100_000n);
+
+    const [after] = await h.allowance.availableToday(USER, food);
+    expect(after!.dailyTarget).toBe(3_600n); // ($1,000 - $100) / 25
+  });
+
+  it('a cap lowered below what is already spent this cycle re-prices today to zero', async () => {
+    const food = await h.seedCategory('Food', 50_000n);
+    await h.spend(food, 10_000n, '2026-09-08');
+    await h.allowance.availableToday(USER, food);
+
+    await h.budgets.setCap(USER, food, 5_000n);
+
+    const [after] = await h.allowance.availableToday(USER, food);
+    expect(after!.dailyTarget).toBe(0n);
+  });
+
+  it('re-pricing twice on one day gives the same number both times', async () => {
+    // What makes the exception safe: the inputs are the cap and yesterday's spend, so
+    // the rewrite is a pure function of state that does not move during the day.
+    const food = await h.seedCategory('Food', 50_000n);
+    await h.allowance.availableToday(USER, food);
+    await h.spend(food, 3_000n);
+
+    await h.budgets.setCap(USER, food, 100_000n);
+    const [first] = await h.allowance.availableToday(USER, food);
+    await h.budgets.setCap(USER, food, 100_000n);
+    const [second] = await h.allowance.availableToday(USER, food);
+
+    expect(second!.dailyTarget).toBe(first!.dailyTarget);
+  });
+
+  it('writes nothing when today has no row yet — the first read computes from the new cap', async () => {
+    const food = await h.seedCategory('Food', 50_000n);
+    await h.budgets.setCap(USER, food, 100_000n);
+    expect(h.store.allowanceSends).toHaveLength(0);
+
+    const [first] = await h.allowance.availableToday(USER, food);
+    expect(first!.dailyTarget).toBe(4_000n);
+  });
+
+  it('re-prices a row the 07:00 bundle already delivered, without sending again', async () => {
+    // Ricky's call, 11 Sep: rewrite regardless of delivery state, never a second
+    // message. The morning text said $20; `/today` now says $40; the row still records
+    // that it was sent, and when.
+    const food = await h.seedCategory('Food', 50_000n, { reminder: true });
+    expect(await h.allowance.computeAndSend(USER)).toMatchObject({ status: 'sent' });
+    expect(h.sender.onlyText).toContain('$20');
+
+    await h.budgets.setCap(USER, food, 100_000n);
+
+    expect(h.sender.callCount).toBe(1);
+    expect(h.store.allowanceSends).toHaveLength(1);
+    expect(h.store.allowanceSends[0]).toMatchObject({
+      deliveryStatus: 'sent',
+      dailyTargetMinorUnits: 4_000n,
+    });
+    expect(h.store.allowanceSends[0]!.sentAt).not.toBeNull();
+
+    const [view] = await h.allowance.availableToday(USER, food);
+    expect(view!.dailyTarget).toBe(4_000n);
+    // And a later tick still finds nothing outstanding — the rewrite did not reopen the day.
+    expect(await h.allowance.computeAndSend(USER)).toMatchObject({ status: 'skipped', categoryCount: 0 });
+    expect(h.sender.callCount).toBe(1);
+  });
+
+  it('tomorrow computes from the new cap as before', async () => {
+    const food = await h.seedCategory('Food', 50_000n);
+    await h.allowance.availableToday(USER, food);
+    await h.budgets.setCap(USER, food, 100_000n);
 
     h.clock.set('2026-09-11T02:00:00Z');
     const [tomorrow] = await h.allowance.availableToday(USER, food);
-    expect(tomorrow!.dailyTarget).toBeGreaterThan(2_000n);
+    expect(tomorrow!.daysLeft).toBe(24);
+    expect(tomorrow!.dailyTarget).toBe(4_166n); // $1,000 / 24
   });
 });
 

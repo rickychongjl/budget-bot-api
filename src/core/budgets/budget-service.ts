@@ -66,6 +66,19 @@ export interface BudgetUserSettings {
 export type BudgetSettingsReader = (userId: UserId) => Promise<BudgetUserSettings>;
 
 /**
+ * M5's side of the one coupling a cap change creates (Ricky, 11 Sep: a raise today
+ * gives you more to spend today). `DefaultAllowanceService` satisfies this
+ * structurally. Optional in the composition root, and called only after M4's own
+ * writes have completed — a failure here never fails the user's `/budget`; the cap is
+ * the system of record and today's figure is a downstream effect. Same shape as M3's
+ * `AllowanceNotifier`.
+ */
+export interface BudgetAllowanceNotifier {
+  /** Re-price today's persisted daily target for the category from its new cap. */
+  capChanged(userId: UserId, categoryId: Id): Promise<void>;
+}
+
+/**
  * One category's budget as the user experiences it right now — the standing rule and
  * the current cycle's frozen snapshot side by side. They differ only when a period was
  * materialised under a cap that has since been superseded, which is exactly the case

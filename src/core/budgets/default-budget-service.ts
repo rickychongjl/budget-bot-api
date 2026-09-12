@@ -5,6 +5,7 @@ import { localDateAt } from '../shared/local-date';
 import type { BudgetReads, BudgetRepository, BudgetWrites } from './budget-repository';
 import type {
   Budget,
+  BudgetAllowanceNotifier,
   BudgetPeriod,
   BudgetService,
   BudgetSettingsReader,
@@ -20,6 +21,8 @@ export interface BudgetServiceDeps<X> {
   /** M2's `IdentityService.getSettings` — M4 never reads `app_user` itself. */
   settingsOf: BudgetSettingsReader;
   clock: Clock;
+  /** M5, so a cap change re-prices today's figure. Optional: M4's own tests run without it. */
+  allowance?: BudgetAllowanceNotifier;
 }
 
 /**
@@ -43,11 +46,13 @@ export class DefaultBudgetService<X> implements BudgetService, PeriodMaterialise
   private readonly repository: BudgetRepository<X>;
   private readonly settingsOf: BudgetSettingsReader;
   private readonly clock: Clock;
+  private readonly allowance: BudgetAllowanceNotifier | undefined;
 
   constructor(deps: BudgetServiceDeps<X>) {
     this.repository = deps.repository;
     this.settingsOf = deps.settingsOf;
     this.clock = deps.clock;
+    this.allowance = deps.allowance;
   }
 
   // ---- period derivation --------------------------------------------------------
@@ -145,6 +150,11 @@ export class DefaultBudgetService<X> implements BudgetService, PeriodMaterialise
    * of the two-table split, and M7's confirmation copy says so explicitly (the change
    * does not retroactively affect transactions already made this period).
    *
+   * "Now" includes today's daily figure (Ricky, 11 Sep). Once both M4 rows are written,
+   * M5 is told so it can re-price today's persisted target — after, never inside, the
+   * writes, and best-effort: M5 failing leaves the cap correct and the figure catching
+   * up tomorrow, which is where it landed before this hook existed.
+   *
    * The category is assumed to exist and belong to the user — the caller resolves a
    * name through M3 first, and the `budget_category_id_category_id_fk` foreign key is
    * the backstop. M4 does not read M3's table to re-check it (master plan §2, rule 2).
@@ -171,8 +181,20 @@ export class DefaultBudgetService<X> implements BudgetService, PeriodMaterialise
     const materialised = await this.repository.findPeriod(userId, budget.id, current.key);
     if (materialised) {
       await this.repository.updatePeriodCap(userId, budget.id, current.key, cap);
+      // A day's target row references its period, so one can only exist once the
+      // period does — no snapshot, nothing for M5 to re-price.
+      await this.notifyAllowance(userId, categoryId);
     }
     return budget;
+  }
+
+  private async notifyAllowance(userId: UserId, categoryId: Id): Promise<void> {
+    if (!this.allowance) return;
+    try {
+      await this.allowance.capChanged(userId, categoryId);
+    } catch {
+      // Swallowed deliberately — the cap is written; M5 computes tomorrow's from it regardless.
+    }
   }
 
   /** Preserves historical `budget_period` rows — they still reference the inactive budget. */

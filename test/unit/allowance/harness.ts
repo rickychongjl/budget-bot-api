@@ -144,6 +144,7 @@ export function createHarness(now = '2026-09-10T02:00:00Z'): Harness {
     repository: new InMemoryBudgetRepository(store),
     settingsOf,
     clock,
+    allowance: { capChanged: (...args) => harness.allowance.capChanged(...args) },
   });
 
   const ledgerRepository = new InMemoryLedgerRepository(store);

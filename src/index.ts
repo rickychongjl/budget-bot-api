@@ -101,13 +101,15 @@ export type ServicesFactory = (env: Env) => Services;
 /**
  * The wiring each module's own `index.ts` header prescribes, in dependency order.
  *
- * Two cycles are unavoidable and are broken the same way M5's test harness breaks
+ * Three cycles are unavoidable and are broken the same way M5's test harness breaks
  * them — with a closure that reads the finished service later, never a half-built
  * object handed out early:
  *
  *   - M2 needs M3 (`history`, to decide whether an account has any transactions) and
  *     M3 needs M2 (`settingsOf`).
  *   - M5 needs M3 (`spendInPeriod`/`spentOn`) and M3 needs M5 (`AllowanceNotifier`).
+ *   - M5 needs M4 (`ensurePeriod`) and M4 needs M5 (`BudgetAllowanceNotifier`, so a
+ *     cap change re-prices today's figure).
  */
 export function createServices(env: Env, options: CreateServicesOptions = {}): Services {
   const clock = options.clock ?? new SystemClock();
@@ -151,7 +153,14 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
   });
 
   // --- M4 -----------------------------------------------------------------------
-  const budgets = new DefaultBudgetService({ repository: budgetRepository, settingsOf, clock });
+  const budgets: DefaultBudgetService<DatabaseExecutor> = new DefaultBudgetService({
+    repository: budgetRepository,
+    settingsOf,
+    clock,
+    // Cycle 3: M5 needs M4 (`ensurePeriod`) and M4 needs M5 (`capChanged`). Resolved
+    // after `allowance` exists, below.
+    allowance: { capChanged: (userId, categoryId) => allowance.capChanged(userId, categoryId) },
+  });
 
   // --- M5 -----------------------------------------------------------------------
   // The explicit annotations on `allowance` and `ledger` are load-bearing: each is
