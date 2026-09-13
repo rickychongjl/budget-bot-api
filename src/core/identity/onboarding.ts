@@ -183,7 +183,7 @@ export class OnboardingService {
       kind: 'prompt',
       prompt: {
         step: 'timezone',
-        text: `Did you mean one of these? Tap it, or search again.`,
+        text: `Did you mean one of these, or search again?`,
         options: matches.map((zone) => ({ label: zone, value: zone })),
       },
     };
@@ -340,8 +340,8 @@ export class OnboardingService {
         return {
           step,
           text:
-            "Welcome to Budge Bot! First, which timezone are you in? Tap one below, or type a city name to search " +
-            "(e.g. \"Auckland\"). This can't be changed later.",
+            "Welcome to Budge Bot! First, which timezone are you in? Type a city name to search " +
+            "(e.g. \"Auckland\"), or choose one below. This can't be changed later.",
           options: curatedTimezoneOptions(),
         };
       case 'currency':
@@ -405,9 +405,9 @@ export class OnboardingService {
         const chosen = categories.filter((c) => enabled.includes(c.id)).map((c) => c.name);
         const intro =
           chosen.length === 0
-            ? `Last step: optionally choose a category for a daily 07:00 reminder, or tap Done to skip. ` +
+            ? `Last step: optionally choose a category for a daily 07:00 reminder, or send Done to skip. ` +
               (limit === 1 ? 'On the free plan you can pick up to 1.' : `You can pick up to ${limit}.`)
-            : `Reminder on: ${chosen.join(', ')}. Pick another (up to ${limit}), or tap Done.`;
+            : `Reminder on: ${chosen.join(', ')}. Pick another (up to ${limit}), or send Done.`;
         return {
           step,
           text: intro,

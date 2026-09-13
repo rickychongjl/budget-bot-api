@@ -127,9 +127,11 @@ function renderPrompt(prompt: OnboardingPrompt): OutboundMessage {
 
   if (prompt.options.length > MAX_INLINE_OPTIONS) {
     // A wall of buttons is unusable on a phone; a numbered list is answerable by
-    // typing, which the machine already accepts as free text.
+    // typing, which the machine already accepts as free text. Telegram renders no
+    // keyboard here, so the reply always spells out how to answer — regardless of
+    // whether `prompt.text` itself happens to assume there's something to tap.
     const list = prompt.options.map((option, index) => `${index + 1}. ${option.label}`).join('\n');
-    return { text: `${prompt.text}\n\n${list}` };
+    return { text: `${prompt.text}\n\n${list}\n\nReply with a number or a name.` };
   }
 
   const buttons = prompt.options
