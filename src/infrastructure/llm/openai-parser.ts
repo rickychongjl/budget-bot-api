@@ -149,6 +149,11 @@ export class OpenAiLlmParser implements LlmParser {
       this.logger.log('warn', 'llm_parse_invalid_output', usageFields(u));
       throw new LlmParseError('invalid_output', 'LLM returned no parseable output', u);
     }
+    // The success path used to be silent, which made the model the one stage of a slow
+    // message nobody could see. `latencyMs` is the figure this method already computed
+    // for `usage` — the same number `parse_event` stores — not a second measurement.
+    // Usage fields only: never the prompt, the response, or the key.
+    this.logger.log('info', 'llm_parse_ok', usageFields(u));
     return fromContract(parsed, u);
   }
 }

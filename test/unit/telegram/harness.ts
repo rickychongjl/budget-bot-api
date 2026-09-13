@@ -16,7 +16,7 @@ import type { ResolvedUser, UserSettings } from '../../../src/core/identity/iden
 import type { Channel, UserId } from '../../../src/core/shared/common';
 import type { OutboundMessage } from '../../../src/core/shared/messaging';
 import { parseUpdate } from '../../../src/channels/telegram/update-parser';
-import { NoopLogger } from '../../../src/observability/log';
+import { NoopLogger, type Logger } from '../../../src/observability/log';
 import { createDomainServices, type DomainServices } from '../../support/domain-services';
 import { FakeMessageSender } from '../../support/fake-message-sender';
 import { InMemoryEntitlementRepository } from '../../support/in-memory-entitlement-repository';
@@ -144,8 +144,16 @@ export interface Harness extends DomainServices {
 /**
  * Default clock is 2026-09-11T02:00:00Z — 12:00 on 2026-09-11 in Sydney. The anchor is
  * the 5th, so the current cycle runs 5 Sep – 4 Oct: 24 days left including today.
+ *
+ * `logger` defaults to the silent one, as every existing caller expects. A test that
+ * cares what is logged — `test/unit/observability/stage-timing.test.ts` — passes a
+ * capturing one and gets it wired into the same three places production wires it:
+ * the pipeline, the free-text path and the dispatcher.
  */
-export function createHarness(now: string | number = '2026-09-11T02:00:00Z'): Harness {
+export function createHarness(
+  now: string | number = '2026-09-11T02:00:00Z',
+  logger: Logger = new NoopLogger(),
+): Harness {
   const clock = new TestClock(now);
   const identity = new FakeIdentity();
   const onboarding = new FakeOnboarding();
@@ -192,6 +200,7 @@ export function createHarness(now: string | number = '2026-09-11T02:00:00Z'): Ha
     parseEvents,
     ledger: domain.ledger,
     allowance: domain.allowance,
+    logger,
   });
 
   const freeText = new TelegramFreeTextHandler({
@@ -201,6 +210,7 @@ export function createHarness(now: string | number = '2026-09-11T02:00:00Z'): Ha
     allowance: domain.allowance,
     gateway,
     clock,
+    logger,
   });
 
   const dispatcher = new TelegramDispatcher({
@@ -219,7 +229,7 @@ export function createHarness(now: string | number = '2026-09-11T02:00:00Z'): Ha
     sender,
     callbacks,
     clock,
-    logger: new NoopLogger(),
+    logger,
     supportContact: SUPPORT_CONTACT,
     freeText,
   });

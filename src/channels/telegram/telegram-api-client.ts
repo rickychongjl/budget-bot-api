@@ -1,4 +1,6 @@
+import { SystemClock, type Clock } from '../../core/shared/clock';
 import type { Logger } from '../../observability/log';
+import { startTimer } from '../../observability/timing';
 
 /**
  * The only code in the repo that calls the Telegram Bot API (M7 "Outbound delivery").
@@ -45,15 +47,23 @@ export interface TelegramApiClientOptions {
   /** Test seam, mirroring `OpenAiLlmParser`'s. */
   fetch?: typeof fetch;
   logger?: Logger;
+  /**
+   * Times the Bot API round trip. Injected like everywhere else so a `TestClock` makes
+   * the number deterministic; defaults to the real clock because most call sites have
+   * no reason to care.
+   */
+  clock?: Clock;
 }
 
 export class TelegramApiClient {
   readonly #token: string;
   readonly #fetch: typeof fetch;
   readonly #logger: Logger | undefined;
+  readonly #clock: Clock;
 
   constructor(options: TelegramApiClientOptions) {
     this.#token = options.token;
+    this.#clock = options.clock ?? new SystemClock();
     // `.bind(globalThis)`, not the bare reference: the Workers runtime's `fetch` is
     // brand-checked and throws "Illegal invocation" once it's stored on an object and
     // later invoked as `this.#fetch(...)` (a method call sets `this` to the instance,
@@ -68,6 +78,9 @@ export class TelegramApiClient {
    * for every method this module uses.
    */
   async call(method: string, payload: Record<string, unknown>): Promise<TelegramCallOutcome> {
+    // The outbound half of a message's latency (M9 stage timing). `method` is one of
+    // this class's own literals; nothing from the payload is logged.
+    const elapsed = startTimer(this.#clock);
     let response: Response;
     try {
       response = await this.#fetch(`${API_BASE}/bot${this.#token}/${method}`, {
@@ -89,11 +102,15 @@ export class TelegramApiClient {
         method,
         error: name,
         ...(message === undefined ? {} : { message }),
+        ms: elapsed(),
       });
       return { ok: false, status: 0, description: null, retryAfterSeconds: null };
     }
 
-    if (response.ok) return { ok: true };
+    if (response.ok) {
+      this.#logger?.log('info', 'telegram.call.ok', { method, ms: elapsed() });
+      return { ok: true };
+    }
 
     const envelope = await readEnvelope(response);
     const retryAfterSeconds = envelope?.parameters?.retry_after ?? null;
@@ -103,6 +120,7 @@ export class TelegramApiClient {
       method,
       status: response.status,
       ...(retryAfterSeconds === null ? {} : { retryAfterSeconds }),
+      ms: elapsed(),
     });
 
     return { ok: false, status: response.status, description, retryAfterSeconds };

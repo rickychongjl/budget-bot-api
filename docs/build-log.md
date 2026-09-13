@@ -2685,3 +2685,121 @@ touches the database, and no integration test asserts on prompt copy.
    history, so it still reads acceptably after the user removes Food — but the cap/rename/
    remove examples in the same paragraph go on naming `Food` after it is gone. Pre-existing,
    untouched here, and only worth fixing if it ever confuses anyone in practice.
+
+---
+
+## M9 — request-lifecycle stage timing — 2026-09-13
+
+Ricky reports a real Telegram message taking 6–12 seconds end to end, first noticed
+once free-text parsing (and therefore OpenAI) started being used; Cloudflare's own Wall
+Time metrics had shown P50 ~282ms / P90+ ~2000ms for onboarding-only traffic, which no
+longer describes what he is seeing. Three theories were live — Neon compute
+cold-starts, the `responses.parse` call itself, and the ~9 sequential database round
+trips one message can trigger — and no per-stage data to choose between them.
+
+This pass adds the data. **Diagnostic instrumentation only: no behaviour, no control
+flow and no business rule changed.** It is built as a permanent, low-overhead
+observability feature rather than a throwaway probe, because "how long did that message
+take?" is a question worth being able to answer at any time.
+
+### Built
+
+- **`observability/timing.ts`** — `startTimer(clock)` and `timed(logger, clock, event,
+  work, fields)`. Two functions, no state, no new logging mechanism: every duration is
+  measured off the layer's **already-injected `Clock`** (CLAUDE.md's rule, and what lets
+  `TestClock` make the assertions deterministic) and written through the existing
+  `Logger` port. `timed` records in a `finally`, so a stage that throws is still
+  measured and the error propagates untouched. Durations are clamped at 0.
+- **Webhook (`channels/telegram/webhook-handler.ts`)** — `telegram.webhook.received`
+  (update id, update kind, ms to read and parse the body) and
+  `telegram.webhook.claimed` (whether the claim won, ms). The claim is the request's
+  *first* database round trip and therefore the one that pays for a cold Neon compute,
+  which is why it is timed on its own. The receipt instant is captured before the body
+  is read and handed to `dispatch`.
+- **Dispatcher (`channels/telegram/dispatcher.ts`)** — `telegram.dispatch.resolved`
+  (M2), `.admitted` (M8's admission transaction), `.onboarding` (M2's machine),
+  `.prompt_checked` (the `pending_prompt` read, plus whether one was open),
+  `.free_text` (with `path: new|answer`), `.command` (the catalogue's own handler name),
+  `.routed` (the whole routing decision), `.sent`, and `.complete` — the closing line,
+  carrying `ok` and the **total since the webhook took delivery**. One `wrangler tail`
+  session now shows a message's total and its breakdown without arithmetic.
+- **Free-text path (`channels/telegram/free-text.ts`)** — `telegram.freetext.context`
+  (the two parallel reads that assemble `UserParseContext`, so a slow context is not
+  mistaken for a slow model), `.parse` (M6 end to end) and `.prompt_written`.
+- **M6 pipeline (`parsing/pipeline.ts`)** — `parse.mechanical` (in-memory, expected
+  ~0ms: the control that proves a slow parse is the model or the database, not us),
+  `parse.event_recorded`, `parse.recorded` (the ledger write) and
+  `parse.allowance_recalculated`.
+- **OpenAI (`infrastructure/llm/openai-parser.ts`)** — `llm_parse_ok`, the success-path
+  line this class never had. It reports the `latencyMs` the method **already computes**
+  for `usage` and `parse_event`, not a second measurement, alongside model and token
+  counts — the same `usageFields` its failure lines use.
+- **Bot API (`channels/telegram/telegram-api-client.ts`)** — `telegram.call.ok` (method,
+  ms) and an `ms` field on the two existing failure lines. Takes an optional `clock`
+  (default `SystemClock`); the composition root passes the one everything else uses.
+
+### Assumed
+
+- **`dispatch(event, receivedAt?)`.** The second parameter is additive and optional, so
+  every existing caller and test double still compiles. It exists because the total is
+  only meaningful from the instant the webhook took delivery, and the dispatcher runs
+  inside `ctx.waitUntil` with no other way to know it.
+- **`ms` is the field name everywhere**, so one `wrangler tail` can be grepped on a
+  single token.
+- **Update ids are loggable; chat and sender ids are not.** M9 forbids channel
+  identifiers; `telegram.webhook.duplicate` and `telegram.dispatch.failed` already
+  logged `updateId`, and that precedent is followed rather than revisited. Stage names,
+  booleans, enum routes and numbers only — no message text, category or merchant name,
+  and no secret.
+- **Onboarding is timed as one stage, not broken down per write.** `OnboardingService`
+  is core code with no `Logger` injected, and nothing in `core/` imports
+  `observability/` today. Threading one in would be the first such dependency and a
+  bigger architectural decision than a diagnostic pass should make on its own — flagged
+  here rather than taken. `telegram.dispatch.onboarding` covers the machine as a whole;
+  if it turns out to be the culprit, breaking it down is its own change.
+- **`TelegramFreeTextHandler`'s `logger` is optional** (defaults to `NoopLogger`), like
+  `TransactionParsingPipeline`'s and `OpenAiLlmParser`'s, so no existing construction
+  had to change.
+- **Cost per message: a dozen-odd single-line console writes of primitives.** Cheap
+  enough to leave on permanently, which is the intent.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors.
+
+`npm test` — **778 passed / 10 skipped** after merging current `main` (768 / 10 on
+`main` alone; the branch read 753 / 10 before #22, #24 and #25 landed their own tests):
+10 new cases in `test/unit/observability/stage-timing.test.ts`. They assert
+the *shape* of what is logged — event name present, `ms` numeric and non-negative —
+with every duration driven by a `TestClock` advanced a known amount inside a double, so
+nothing depends on real elapsed time. One case walks a whole free-text message with
+40ms of identity, 30ms of prompt read and 900ms of model, dispatched 500ms after
+receipt, and asserts `telegram.dispatch.complete` reads 1470ms. Two cases mirror
+`llm-parser.test.ts`'s "never logs the API key, the message text, or the categories":
+no line on the path contains the message, the category or merchant names, the timezone,
+the chat or sender id, the bot token, the webhook secret or the API key.
+
+`test/unit/telegram/harness.ts` gained an optional second parameter (`logger`,
+defaulting to `NoopLogger`) so the shared harness can be driven with a capturing logger.
+No existing call site changed.
+
+`npm run test:integration` — 81 passed / 9 skipped. The skipped suites are the ones
+gated on `DATABASE_URL`, which is not set in this worktree; the PGlite-backed ones ran.
+Nothing here touches the schema, so `npm run db:generate` was not run.
+
+### Open questions
+
+1. **This PR adds visibility, not speed. Nothing here makes anything faster.** Once it
+   is merged and deployed, someone has to send one real message through `wrangler tail`,
+   read the breakdown, and decide what — if anything — to fix. The lines to read in
+   order are `telegram.webhook.claimed` (cold Neon shows up here first),
+   `telegram.dispatch.resolved`, `telegram.dispatch.admitted`,
+   `telegram.freetext.context`, `llm_parse_ok`, `parse.recorded`, `telegram.call.ok`,
+   and finally `telegram.dispatch.complete` for the total.
+2. **If the total is dominated by the database rather than the model**, the ~9
+   sequential round trips are the thing to attack, and that is a design change (batching
+   or parallelising across module boundaries) that M8's and M2's contracts have to agree
+   to — not something to fold into an instrumentation PR.
+3. **Should any of these lines be `debug` rather than `info`** once the question is
+   answered? There is no `debug` level today, and adding one is only worth it if the
+   volume turns out to be a nuisance in Workers Logs.

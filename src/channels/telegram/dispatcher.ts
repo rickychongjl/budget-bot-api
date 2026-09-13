@@ -15,6 +15,7 @@ import type { Instant, UserId } from '../../core/shared/common';
 import { RefusalError } from '../../core/shared/errors';
 import type { ChannelConnection, MessageSender, OutboundMessage } from '../../core/shared/messaging';
 import type { Logger } from '../../observability/log';
+import { startTimer, timed } from '../../observability/timing';
 import type { CommandHandler, CommandRouter, CommandServices } from './command-router';
 import { parseCommand } from './command-router';
 import { UNKNOWN_COMMAND } from './commands/catalogue';
@@ -57,6 +58,14 @@ type RoutableEvent = Exclude<TelegramEvent, { kind: 'unsupported' }>;
  *
  * Every branch ends in exactly one send (M11: "one conversational reply per input
  * step"), and every failure ends in exactly one apology.
+ *
+ * **Stage timing (M9).** Each step above that can block — the identity read, the
+ * admission transaction, the onboarding machine, the pending-prompt read, the
+ * free-text path — is wrapped in a `telegram.dispatch.*` line carrying the update id
+ * and a duration, and `dispatch` closes with `telegram.dispatch.complete` giving the
+ * total since the webhook received the update. One `wrangler tail` session therefore
+ * shows a message's total and its breakdown without arithmetic. Durations and stage
+ * names only: no message text, no category or merchant names, no chat id.
  */
 
 /**
@@ -136,9 +145,17 @@ export class TelegramDispatcher {
    * Never throws. The webhook has already answered 200, so an exception here would
    * become an unhandled rejection inside `waitUntil` and the user would simply hear
    * nothing back.
+   *
+   * `receivedAt` is the instant the webhook took delivery, passed so the closing
+   * timing line can report the whole lifecycle. Optional: a caller that dispatches an
+   * event from anywhere else (tests, a replay) simply gets this call's own duration.
    */
-  async dispatch(event: TelegramEvent): Promise<void> {
+  async dispatch(event: TelegramEvent, receivedAt?: Instant): Promise<void> {
     if (event.kind === 'unsupported') return;
+
+    const startedAt = receivedAt ?? this.deps.clock.now();
+    const sinceReceipt = (): number => Math.max(0, this.deps.clock.now() - startedAt);
+    let failed = false;
 
     const chatId = event.sender.chatId;
     // Captured as `route` resolves it, so both the reply path and the failure path can
@@ -149,9 +166,22 @@ export class TelegramDispatcher {
     };
 
     try {
+      const routeElapsed = startTimer(this.deps.clock);
       const message = await this.route(event, remember);
-      if (message !== null) await this.send(chatId, message, userId);
+      // How long the routing decision itself took — steps 1-9 above, every database
+      // read they made included. `replied` says whether a branch chose to say nothing.
+      this.deps.logger.log('info', 'telegram.dispatch.routed', {
+        updateId: event.updateId,
+        replied: message !== null,
+        ms: routeElapsed(),
+      });
+      if (message !== null) {
+        await timed(this.deps.logger, this.deps.clock, 'telegram.dispatch.sent', () =>
+          this.send(chatId, message, userId),
+        );
+      }
     } catch (error) {
+      failed = true;
       // A refusal is an answer, not a failure: modules throw `RefusalError` /
       // `EntitlementRefusal` with copy written for the user, and M11 requires it be
       // rendered rather than surfacing as a raw error.
@@ -165,6 +195,15 @@ export class TelegramDispatcher {
       // Exactly one message either way — the branch that threw sent nothing.
       await this.send(chatId, refusal ?? { text: APOLOGY }, userId).catch(() => undefined);
     }
+
+    // The one line that answers "how long did that message take?" — everything from
+    // the webhook taking delivery to the reply being on its way. Read it against the
+    // `telegram.*` / `parse.*` / `llm_parse_ok` stage lines above it in the tail.
+    this.deps.logger.log('info', 'telegram.dispatch.complete', {
+      updateId: event.updateId,
+      ok: !failed,
+      ms: sinceReceipt(),
+    });
   }
 
   /** Returns the single reply to send, or null when the branch deliberately says nothing. */
@@ -179,7 +218,13 @@ export class TelegramDispatcher {
     const now = event.sentAt ?? this.deps.clock.now();
 
     // 2. Who is this? Null means no account yet — not an error, just a stranger.
-    const resolved = await this.deps.identity.resolve(CHANNEL, event.sender.externalId);
+    const resolved = await timed(
+      this.deps.logger,
+      this.deps.clock,
+      'telegram.dispatch.resolved',
+      () => this.deps.identity.resolve(CHANNEL, event.sender.externalId),
+      { updateId: event.updateId },
+    );
 
     remember(resolved?.userId ?? null);
 
@@ -203,7 +248,17 @@ export class TelegramDispatcher {
     //    commands, which skip it outright. Every other command still passes through,
     //    but without the daily cap (see `admit`).
     if (command === null || !command.exemptFromAdmission) {
-      const refusal = await this.admit(resolved, event.updateId, now, command !== null);
+      // M8's admission is a multi-query transaction — the second-largest block of
+      // database time a plain message pays for, after the parse itself. The stage is
+      // timed either way: `skipDailyCap` changes the *outcome*, not the wall-clock
+      // cost of the transaction, and a waived cap still pays for dedupe and fair use.
+      const refusal = await timed(
+        this.deps.logger,
+        this.deps.clock,
+        'telegram.dispatch.admitted',
+        () => this.admit(resolved, event.updateId, now, command !== null),
+        { updateId: event.updateId },
+      );
       if (refusal !== undefined) return refusal;
     }
 
@@ -227,18 +282,44 @@ export class TelegramDispatcher {
 
     // 7. Still signing up: every message is an answer to the current step.
     if (!resolved.onboarded) {
-      const reply = await this.deps.onboarding.answer(resolved.userId, { value: event.text });
+      // M2's machine runs several reads and writes per step; it is measured as one
+      // stage because its internals are core code with no logger of their own.
+      const reply = await timed(
+        this.deps.logger,
+        this.deps.clock,
+        'telegram.dispatch.onboarding',
+        () => this.deps.onboarding.answer(resolved.userId, { value: event.text }),
+        { updateId: event.updateId },
+      );
       return renderOnboardingReply(reply);
     }
 
     // 8. An open question takes the next free-text message as its answer.
+    const promptElapsed = startTimer(this.deps.clock);
     const open = await this.deps.gateway.findPendingPrompt(resolved.userId);
+    this.deps.logger.log('info', 'telegram.dispatch.prompt_checked', {
+      updateId: event.updateId,
+      open: open !== null,
+      ms: promptElapsed(),
+    });
     if (open !== null) {
-      return this.deps.freeText.handlePromptAnswer(resolved.userId, event.text);
+      return timed(
+        this.deps.logger,
+        this.deps.clock,
+        'telegram.dispatch.free_text',
+        () => this.deps.freeText.handlePromptAnswer(resolved.userId, event.text),
+        { updateId: event.updateId, path: 'answer' },
+      );
     }
 
     // 9. Free text → M6.
-    return this.deps.freeText.handleFreeText(resolved.userId, event.text);
+    return timed(
+      this.deps.logger,
+      this.deps.clock,
+      'telegram.dispatch.free_text',
+      () => this.deps.freeText.handleFreeText(resolved.userId, event.text),
+      { updateId: event.updateId, path: 'new' },
+    );
   }
 
   /**
@@ -343,6 +424,24 @@ export class TelegramDispatcher {
   }
 
   private async runCommand(
+    handler: CommandHandler,
+    parsed: ReturnType<typeof parseCommand>,
+    sender: TelegramSender,
+    userId: UserId | null,
+    now: Instant,
+  ): Promise<OutboundMessage> {
+    // `handler.name` is the catalogue's own constant, never the text the user typed —
+    // an unknown command never reaches here.
+    return timed(
+      this.deps.logger,
+      this.deps.clock,
+      'telegram.dispatch.command',
+      () => this.runHandler(handler, parsed, sender, userId, now),
+      { command: handler.name },
+    );
+  }
+
+  private async runHandler(
     handler: CommandHandler,
     parsed: ReturnType<typeof parseCommand>,
     sender: TelegramSender,
