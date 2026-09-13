@@ -149,7 +149,7 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
     parseEventId: Id,
     mappingProposal: MappingProposal | null,
   ): Promise<ParseOutcome> {
-    const transaction = await this.persist(context.userId, candidate);
+    const transaction = await this.persist(context.userId, candidate, parseEventId);
     return { kind: 'recorded', route: candidate.parseRoute, parseEventId, transaction, mappingProposal };
   }
 
@@ -190,9 +190,16 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
 
   // --- internals used by ParseRun --------------------------------------------
 
-  /** @internal */
-  async persist(userId: UserId, candidate: ValidatedCandidate): Promise<Transaction> {
-    const transaction = await this.ledger.record(userId, candidate);
+  /**
+   * @internal
+   *
+   * `parseEventId` closes M6's open question 2 (M7 stage 4D): every candidate that
+   * reaches here was parsed, so it always has one, and stamping it onto the candidate
+   * — never onto `CandidateFields`/the validator, which run before the event is
+   * logged — is what lets `LedgerService.correct()` attribute a later fix back to it.
+   */
+  async persist(userId: UserId, candidate: ValidatedCandidate, parseEventId: Id): Promise<Transaction> {
+    const transaction = await this.ledger.record(userId, { ...candidate, parseEventId });
     // M5 recalculation trigger (M3 checklist 2e / M6 checklist 3). Income never
     // offsets a cap, so only categorised expenses/refunds need it.
     if (candidate.direction !== 'income' && candidate.categoryId !== null) {
@@ -398,7 +405,7 @@ class ParseRun {
       };
     }
     const parseEventId = await this.logEvent('llm', false);
-    const transaction = await this.pipeline.persist(this.context.userId, validation.candidate);
+    const transaction = await this.pipeline.persist(this.context.userId, validation.candidate, parseEventId);
     return { kind: 'recorded', route: 'llm', parseEventId, transaction, mappingProposal: proposal };
   }
 
@@ -414,7 +421,7 @@ class ParseRun {
     });
     if (!validation.ok) return this.clarify(route, validation.reason, validation.question);
     const parseEventId = await this.logEvent(route, false);
-    const transaction = await this.pipeline.persist(this.context.userId, validation.candidate);
+    const transaction = await this.pipeline.persist(this.context.userId, validation.candidate, parseEventId);
     return { kind: 'recorded', route, parseEventId, transaction, mappingProposal: null };
   }
 

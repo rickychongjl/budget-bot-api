@@ -60,3 +60,25 @@ export interface AllowanceNotifier {
    */
   categoryArchived(userId: UserId, categoryId: Id): Promise<void>;
 }
+
+/**
+ * M6's side of the correction feedback loop (M6 open question 2, closed M7 stage 4D):
+ * M3 calls this from `correct()` whenever the corrected transaction carries a
+ * `parseEventId`, so M9's `parse_event.was_corrected` stays the only honest measure of
+ * parser accuracy — otherwise every correction is invisible to it forever, however
+ * often people actually fix what the bot parsed.
+ *
+ * Structurally identical to `ParseEventCorrectionHook`
+ * (`src/parsing/parse-event-repository.ts`) on purpose rather than imported from
+ * there: `src/parsing` already imports `ValidatedCandidate`/`Transaction` from this
+ * module, so importing its port back here would be a cross-module cycle. M3 declares
+ * the shape it needs; `TransactionParsingPipeline` satisfies it structurally, and the
+ * composition root wires the two together with a closure, the same way it resolves
+ * every other cross-module cycle in this file.
+ *
+ * Optional in the composition root until M6's pipeline exists to supply it — a
+ * transaction with no `parseEventId` has nothing to report either way.
+ */
+export interface LedgerCorrectionNotifier {
+  onTransactionCorrected(parseEventId: Id): Promise<void>;
+}

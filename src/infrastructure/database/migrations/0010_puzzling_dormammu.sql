@@ -1,0 +1,2 @@
+ALTER TABLE "transaction" ADD COLUMN "parse_event_id" uuid;--> statement-breakpoint
+ALTER TABLE "transaction" ADD CONSTRAINT "transaction_parse_event_id_parse_event_id_fk" FOREIGN KEY ("parse_event_id") REFERENCES "public"."parse_event"("id") ON DELETE set null ON UPDATE no action;

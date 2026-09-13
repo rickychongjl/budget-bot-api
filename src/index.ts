@@ -103,7 +103,7 @@ export type ServicesFactory = (env: Env) => Services;
 /**
  * The wiring each module's own `index.ts` header prescribes, in dependency order.
  *
- * Three cycles are unavoidable and are broken the same way M5's test harness breaks
+ * Four cycles are unavoidable and are broken the same way M5's test harness breaks
  * them — with a closure that reads the finished service later, never a half-built
  * object handed out early:
  *
@@ -112,6 +112,8 @@ export type ServicesFactory = (env: Env) => Services;
  *   - M5 needs M3 (`spendInPeriod`/`spentOn`) and M3 needs M5 (`AllowanceNotifier`).
  *   - M5 needs M4 (`ensurePeriod`) and M4 needs M5 (`BudgetAllowanceNotifier`, so a
  *     cap change re-prices today's figure).
+ *   - M3 needs M6 (`LedgerCorrectionNotifier`, so `correct()` can flip
+ *     `parse_event.was_corrected`) and M6 needs M3 (`LedgerService.record`).
  */
 export function createServices(env: Env, options: CreateServicesOptions = {}): Services {
   const clock = options.clock ?? new SystemClock();
@@ -205,6 +207,10 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
     settingsOf,
     clock,
     allowance,
+    // Cycle 4 (M6 open question 2, closed stage 4D): resolved after `parsing` exists,
+    // below. `TransactionParsingPipeline` satisfies `LedgerCorrectionNotifier`
+    // structurally — `core/ledger` never imports `src/parsing`.
+    correction: { onTransactionCorrected: (parseEventId) => parsing.onTransactionCorrected(parseEventId) },
   });
 
   const categories = new DefaultCategoryService({

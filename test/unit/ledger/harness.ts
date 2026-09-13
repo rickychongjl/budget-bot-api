@@ -6,6 +6,7 @@ import {
   DefaultLedgerService,
   type AllowanceNotifier,
   type CategoryCapacityGate,
+  type LedgerCorrectionNotifier,
   type LedgerUserSettings,
   type ValidatedCandidate,
 } from '../../../src/core/ledger';
@@ -58,11 +59,26 @@ export class RecordingAllowanceNotifier implements AllowanceNotifier {
   }
 }
 
+/**
+ * Records what M3 tells M6 (M6 open question 2, closed M7 stage 4D) — stands in for
+ * `TransactionParsingPipeline`, which is the only real implementation.
+ */
+export class RecordingCorrectionNotifier implements LedgerCorrectionNotifier {
+  readonly corrected: Id[] = [];
+  failOnCorrection = false;
+
+  async onTransactionCorrected(parseEventId: Id): Promise<void> {
+    if (this.failOnCorrection) throw new Error('M6 is down');
+    this.corrected.push(parseEventId);
+  }
+}
+
 export interface Harness {
   store: InMemoryStore;
   clock: TestClock;
   capacity: FakeCapacityGate;
   allowance: RecordingAllowanceNotifier;
+  correction: RecordingCorrectionNotifier;
   budgets: DefaultBudgetService<InMemoryStore>;
   categories: DefaultCategoryService<InMemoryStore>;
   ledger: DefaultLedgerService<InMemoryStore>;
@@ -80,12 +96,14 @@ export function createHarness(now = '2026-09-10T02:00:00Z'): Harness {
   const clock = new TestClock(now);
   const capacity = new FakeCapacityGate(store);
   const allowance = new RecordingAllowanceNotifier();
+  const correction = new RecordingCorrectionNotifier();
 
   const harness = {
     store,
     clock,
     capacity,
     allowance,
+    correction,
     settings: {
       timezone: 'Australia/Sydney',
       currencyCode: 'AUD',
@@ -119,6 +137,7 @@ export function createHarness(now = '2026-09-10T02:00:00Z'): Harness {
     settingsOf,
     clock,
     allowance,
+    correction,
   });
 
   return harness;

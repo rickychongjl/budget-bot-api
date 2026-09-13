@@ -3,7 +3,7 @@ import type { Clock } from '../shared/clock';
 import type { Id, LocalDate, MinorUnits, UserId } from '../shared/common';
 import { RefusalError } from '../shared/errors';
 import { localDateAt } from '../shared/local-date';
-import type { AllowanceNotifier, LedgerSettingsReader } from './collaborators';
+import type { AllowanceNotifier, LedgerCorrectionNotifier, LedgerSettingsReader } from './collaborators';
 import type { HistoryCursor, LedgerRepository, StoredTransactionPatch } from './ledger-repository';
 import type {
   LedgerService,
@@ -24,6 +24,8 @@ export interface LedgerServiceDeps<X> {
   clock: Clock;
   /** M5 — omitted until Phase 3 lands. */
   allowance?: AllowanceNotifier;
+  /** M6 — omitted until the composition root has a pipeline to report corrections to. */
+  correction?: LedgerCorrectionNotifier;
 }
 
 const MAX_PAGE_SIZE = 50;
@@ -48,6 +50,7 @@ export class DefaultLedgerService<X> implements LedgerService {
   private readonly settingsOf: LedgerSettingsReader;
   private readonly clock: Clock;
   private readonly allowance: AllowanceNotifier | undefined;
+  private readonly correction: LedgerCorrectionNotifier | undefined;
 
   constructor(deps: LedgerServiceDeps<X>) {
     this.repository = deps.repository;
@@ -55,6 +58,7 @@ export class DefaultLedgerService<X> implements LedgerService {
     this.settingsOf = deps.settingsOf;
     this.clock = deps.clock;
     this.allowance = deps.allowance;
+    this.correction = deps.correction;
   }
 
   // ---- write ---------------------------------------------------------------------
@@ -118,6 +122,7 @@ export class DefaultLedgerService<X> implements LedgerService {
         rawText: candidate.rawText,
         parseRoute: candidate.parseRoute,
         parseConfidence: candidate.parseConfidence ?? null,
+        parseEventId: candidate.parseEventId ?? null,
         now,
       });
     });
@@ -168,6 +173,7 @@ export class DefaultLedgerService<X> implements LedgerService {
     // Both the old and the new date need recomputing when a correction moves one.
     await this.notifyAllowance(userId, existing.occurredOn);
     if (updated.occurredOn !== existing.occurredOn) await this.notifyAllowance(userId, updated.occurredOn);
+    await this.notifyCorrection(existing.parseEventId);
     return updated;
   }
 
@@ -250,6 +256,23 @@ export class DefaultLedgerService<X> implements LedgerService {
       await this.allowance.ledgerChanged(userId, localDate);
     } catch {
       // Swallowed deliberately — M5 recomputes on its own next read regardless.
+    }
+  }
+
+  /**
+   * M6 open question 2, closed M7 stage 4D: tell the parsing pipeline a transaction it
+   * produced was corrected, so `parse_event.was_corrected` stops being permanently
+   * false. `existingParseEventId` is null for anything not written from a parse — a
+   * command wrote it directly, or the correction hook wasn't wired yet when it was
+   * recorded — and a correction to one of those has nothing to report. Never lets a
+   * failure here fail the user's edit, matching `notifyAllowance`.
+   */
+  private async notifyCorrection(existingParseEventId: Id | null): Promise<void> {
+    if (!this.correction || existingParseEventId === null) return;
+    try {
+      await this.correction.onTransactionCorrected(existingParseEventId);
+    } catch {
+      // Swallowed deliberately — the correction itself already committed.
     }
   }
 }

@@ -296,6 +296,38 @@ describe('correct', () => {
       code: 'RESOURCE_NOT_FOUND',
     });
   });
+
+  // M6 open question 2, closed M7 stage 4D: `parse_event.was_corrected` is only
+  // honest if `correct()` actually tells M6 when a parsed transaction is fixed.
+  describe('the M6 correction callback', () => {
+    it('reports a correction on a transaction that came from a parse', async () => {
+      const food = await budgeted('Food');
+      const tx = await h.ledger.record(USER, candidate({ categoryId: food.id, parseEventId: 'pe-1' }));
+
+      await h.ledger.correct(USER, tx.id, { note: 'actually lunch' });
+
+      expect(h.correction.corrected).toEqual(['pe-1']);
+    });
+
+    it('says nothing for a transaction with no parse event — a 4C-style direct write', async () => {
+      const food = await budgeted('Food');
+      const tx = await h.ledger.record(USER, candidate({ categoryId: food.id }));
+
+      await h.ledger.correct(USER, tx.id, { note: 'actually lunch' });
+
+      expect(h.correction.corrected).toEqual([]);
+    });
+
+    it('does not fail the user"s correction when M6 is unavailable', async () => {
+      const food = await budgeted('Food');
+      const tx = await h.ledger.record(USER, candidate({ categoryId: food.id, parseEventId: 'pe-2' }));
+      h.correction.failOnCorrection = true;
+
+      await expect(h.ledger.correct(USER, tx.id, { note: 'actually lunch' })).resolves.toMatchObject({
+        note: 'actually lunch',
+      });
+    });
+  });
 });
 
 describe('softDelete / deleteLast', () => {

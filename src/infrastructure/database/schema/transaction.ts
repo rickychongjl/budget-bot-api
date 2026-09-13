@@ -14,6 +14,7 @@ import {
 import { budgetPeriod } from './budget';
 import { category } from './category';
 import { appUser } from './identity';
+import { parseEvent } from './observability';
 
 /**
  * M3 — Categories & Ledger owns this file (ledger half).
@@ -33,6 +34,11 @@ import { appUser } from './identity';
  *   - `parse_route text check (... in ('command','mechanical','mapping','llm'))`.
  *   - `status` defaults `'confirmed'`; the hot indexes are partial on
  *     `where status = 'confirmed'` — every read behind budget maths filters on it.
+ *   - `parse_event_id` -> `parse_event(id) on delete set null` (M9-owned table,
+ *     added M7 stage 4D closing M6's open question 2: `LedgerService.correct()` now
+ *     calls `LedgerCorrectionNotifier.onTransactionCorrected` so `was_corrected`
+ *     stops being permanently false). Nullable and `set null` rather than `cascade`:
+ *     a transaction outlives the retention pass that may later prune its parse event.
  *
  * `category_name_snapshot` was proposed by M3's plan for the deferred "real category
  * removal" feature and **deliberately not built** — confirmed 8 Sep. It arrives with
@@ -61,6 +67,7 @@ export const transaction = pgTable(
     rawText: text('raw_text'),
     parseRoute: text('parse_route').notNull(),
     parseConfidence: numeric('parse_confidence', { precision: 4, scale: 3 }),
+    parseEventId: uuid('parse_event_id').references(() => parseEvent.id, { onDelete: 'set null' }),
     status: text('status').notNull().default('confirmed'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

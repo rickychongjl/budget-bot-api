@@ -40,6 +40,7 @@ export type { Category, CategoryService } from './category-service';
 export type {
   AllowanceNotifier,
   CategoryCapacityGate,
+  LedgerCorrectionNotifier,
   LedgerSettingsReader,
   LedgerUserSettings,
 } from './collaborators';
