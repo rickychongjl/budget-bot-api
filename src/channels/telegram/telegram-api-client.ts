@@ -120,6 +120,23 @@ export class TelegramApiClient {
   answerCallbackQuery(callbackQueryId: string): Promise<TelegramCallOutcome> {
     return this.call('answerCallbackQuery', { callback_query_id: callbackQueryId });
   }
+
+  /**
+   * Replaces the whole `/` command menu. Idempotent — safe to rerun after any change
+   * to the catalogue in `command-router.ts` (M7 stage 4E).
+   */
+  setMyCommands(commands: readonly { command: string; description: string }[]): Promise<TelegramCallOutcome> {
+    return this.call('setMyCommands', { commands });
+  }
+
+  /**
+   * `secretToken` is echoed back on every inbound call as
+   * `X-Telegram-Bot-Api-Secret-Token`, which `TelegramWebhookHandler` checks before
+   * trusting the body. Idempotent — safe to rerun after every deploy.
+   */
+  setWebhook(url: string, secretToken: string): Promise<TelegramCallOutcome> {
+    return this.call('setWebhook', { url, secret_token: secretToken });
+  }
 }
 
 /** A failing response may carry an envelope, HTML, or nothing. Never let that throw. */

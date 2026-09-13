@@ -2255,3 +2255,52 @@ usable key.
    own header says "never in CI by default" — restoring collection doesn't change that
    call, since it still needs a key CI does not have. Worth a deliberate decision
    separate from this fix, not a default to fall into.
+
+---
+
+## M7 stage 4E — `/internal/register-commands` — 2026-09-13
+
+Found while preparing the go-live checklist: stage 4E's own plan describes this route
+("Telegram-side command menu is built here, scripted, not clicked" — `docs/M7-phase-4-plan.md`)
+but it did not exist. Built it now rather than hand Ricky a checklist step that 404s.
+
+### Built
+
+- **`TelegramApiClient.setMyCommands` / `.setWebhook`** (`channels/telegram/telegram-api-client.ts`) —
+  two thin wrappers over the existing `call()`, matching `sendMessage`/`answerCallbackQuery`'s
+  pattern. No new HTTP handling; the token-safety and outcome-classification guarantees
+  `call()` already gives every method apply here unchanged.
+- **`POST /internal/register-commands`** (`src/index.ts`) — same `INTERNAL_DISPATCH_SECRET`
+  constant-time guard as `/internal/send-allowance`. Derives the command list from
+  `createCatalogue().all()` (the same catalogue the dispatcher and `/help` already use —
+  one source of truth, per M11's DoD line) and calls `setMyCommands` and `setWebhook`
+  (webhook URL built from `WORKER_BASE_URL`, secret from `TELEGRAM_WEBHOOK_SECRET`) in
+  parallel. `200` with `commandsRegistered` count on success; `502` with both raw
+  outcomes if either Bot API call fails, so a partial failure is visible rather than
+  silently swallowed.
+- **`Services.telegramApi`** — exposed on the composition root's service bag; nothing
+  else in the application needs raw Bot API access, so this route is its only consumer.
+
+### Assumed
+
+- **No request body.** Everything the route needs (the catalogue, the webhook URL, the
+  webhook secret) is already environment/code-derived — there is nothing for a caller
+  to supply, unlike `/internal/send-allowance`'s `userId`.
+- **Idempotent, rerun freely.** Both Bot API methods replace their target wholesale, so
+  rerunning after every catalogue change or redeploy is the documented, expected usage
+  (stage 4E's plan says exactly this), not a one-time bootstrap step.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors.
+
+`npm test` — **748 passed / 1 skipped**, up from 744 passed / 1 skipped: 4 new cases in
+`test/unit/telegram/composition-root.test.ts` (missing/wrong secret → 401 without
+building services; success registers the real catalogue and the right webhook URL;
+either Bot API call failing surfaces as 502 with both outcomes).
+
+`npm run test:integration` — not run; this route touches no database.
+
+### Open questions
+
+None new — this closes stage 4E's own gap rather than opening one.

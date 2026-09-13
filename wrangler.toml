@@ -16,7 +16,7 @@ main = "src/index.ts"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 
-workers_dev = false
+workers_dev = true
 
 [observability]
 enabled = true
@@ -24,7 +24,11 @@ enabled = true
 # Not a secret — the Worker's own public origin. The cron fan-out needs it because a
 # `scheduled` invocation has no inbound request to derive an origin from, and the
 # fan-out has to be a real subrequest so each send gets its own 10ms CPU budget.
-# Set this to the deployed origin before the first cron tick matters.
+#
+# REPLACE before the first cron tick matters: the real subdomain is
+# `<your-cloudflare-workers-subdomain>.workers.dev`, chosen once per Cloudflare
+# account (visible on the Workers dashboard, or after the first `wrangler deploy`).
+# `budge-bot-api.workers.dev` below is a placeholder, not a real reachable URL.
 [vars]
 WORKER_BASE_URL = "https://budge-bot-api.workers.dev"
 

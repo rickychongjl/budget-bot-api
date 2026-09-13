@@ -88,6 +88,8 @@ export interface Services {
   gateway: GatewayRepository;
   /** The webhook, fully wired. `index.ts` only hands it the raw request. */
   telegramWebhook: TelegramWebhookHandler;
+  /** Raw Bot API access for `/internal/register-commands` (stage 4E) — nothing else needs it. */
+  telegramApi: TelegramApiClient;
 }
 
 export interface CreateServicesOptions {
@@ -298,6 +300,7 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
     sender,
     gateway: gatewayRepository,
     telegramWebhook,
+    telegramApi,
   };
 }
 
@@ -348,6 +351,40 @@ export function createApp(makeServices: ServicesFactory = createServices): Hono<
 
     const outcome = await makeServices(c.env).allowance.computeAndSend(body.userId);
     return c.json(outcome);
+  });
+
+  /**
+   * Go-live and any later catalogue change (M7 stage 4E). Registers Telegram's `/`
+   * command menu straight from `command-router.ts`'s own catalogue — one source of
+   * truth, so the menu Telegram shows can never drift from the handlers that
+   * actually exist — and points the webhook at this deployment. Idempotent; rerun
+   * after any command change. Never routed publicly: same dispatch guard as
+   * `/internal/send-allowance`.
+   */
+  routes.post('/internal/register-commands', async (c) => {
+    if (
+      !isAuthorisedDispatch(
+        c.req.header('X-Internal-Dispatch-Secret'),
+        c.env.INTERNAL_DISPATCH_SECRET,
+      )
+    ) {
+      return c.json({ error: 'unauthorized' }, 401);
+    }
+
+    const { telegramApi } = makeServices(c.env);
+    const commands = createCatalogue()
+      .all()
+      .map((handler) => ({ command: handler.name, description: handler.description }));
+
+    const [setMyCommands, setWebhook] = await Promise.all([
+      telegramApi.setMyCommands(commands),
+      telegramApi.setWebhook(`${c.env.WORKER_BASE_URL}/telegram/webhook`, c.env.TELEGRAM_WEBHOOK_SECRET),
+    ]);
+
+    if (!setMyCommands.ok || !setWebhook.ok) {
+      return c.json({ setMyCommands, setWebhook }, 502);
+    }
+    return c.json({ ok: true, commandsRegistered: commands.length });
   });
 
   return routes;
