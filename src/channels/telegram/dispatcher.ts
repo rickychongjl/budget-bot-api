@@ -22,7 +22,9 @@ import { historyPage } from './commands/history';
 import type { GatewayRepository } from './gateway-repository';
 import {
   paginate,
+  parseConfirmCallbackData,
   parseHistoryCallbackData,
+  parseMappingCallbackData,
   parseOnboardingCallbackData,
   renderOnboardingReply,
   renderRefusal,
@@ -72,13 +74,28 @@ export interface CallbackAcknowledger {
 }
 
 /**
- * Stage 4D's seam. The dispatcher already knows *when* free text and an open prompt
- * should be handled; what it cannot do yet is parse an expense. 4D supplies this and
- * changes no routing.
+ * The free-text path (stage 4D). The dispatcher decides *when* a message is free
+ * text, an answer to an open question, or a press of one of the two buttons that
+ * path puts on screen; everything after that — M6, the prompt row, the wording — is
+ * behind this seam.
+ *
+ * Every method returns exactly one message, including its failure cases: a stale
+ * button and an undecodable prompt both answer `STALE_ACTION` rather than throwing.
+ *
+ * **No `now` is passed.** The dispatcher's `now` is the sender's timestamp off the
+ * Telegram update, which is the right clock for M8's admission windows and the wrong
+ * one here: M6 stamps a transaction from its own injected `Clock`, so a handler
+ * deciding "was this today?" against Telegram's timestamp can call an entry
+ * yesterday's on the strength of a few seconds' skew across a local midnight. This
+ * path uses the same clock that stamped the row.
  */
 export interface FreeTextHandler {
-  handleFreeText(userId: UserId, text: string, now: Instant): Promise<OutboundMessage>;
-  handlePromptAnswer(userId: UserId, text: string, now: Instant): Promise<OutboundMessage>;
+  handleFreeText(userId: UserId, text: string): Promise<OutboundMessage>;
+  handlePromptAnswer(userId: UserId, text: string): Promise<OutboundMessage>;
+  /** `pc:yes` / `pc:no` — record the candidate the bot asked about, or drop it. */
+  answerConfirm(userId: UserId, yes: boolean): Promise<OutboundMessage>;
+  /** `map:yes` / `map:no` — remember this merchant's category, or keep asking. */
+  answerMapping(userId: UserId, yes: boolean): Promise<OutboundMessage>;
 }
 
 export interface DispatcherDeps {
@@ -98,8 +115,7 @@ export interface DispatcherDeps {
   clock: Clock;
   logger: Logger;
   supportContact: string;
-  /** Absent until stage 4D. */
-  freeText?: FreeTextHandler;
+  freeText: FreeTextHandler;
 }
 
 const CHANNEL = 'telegram' as const;
@@ -111,8 +127,6 @@ export const PAYMENTS_NOT_LIVE_REPLY =
   "Payments aren't live yet, so I can't take that. Nothing was charged.";
 export const APOLOGY =
   "Something went wrong on my end and I couldn't finish that. Try again in a moment.";
-export const FREE_TEXT_NOT_WIRED_REPLY =
-  "I can't read free-text expenses yet — that's the next thing I'm learning. Try /help for what I can do now.";
 
 export class TelegramDispatcher {
   constructor(private readonly deps: DispatcherDeps) {}
@@ -218,13 +232,11 @@ export class TelegramDispatcher {
     // 8. An open question takes the next free-text message as its answer.
     const open = await this.deps.gateway.findPendingPrompt(resolved.userId);
     if (open !== null) {
-      if (this.deps.freeText === undefined) return { text: FREE_TEXT_NOT_WIRED_REPLY };
-      return this.deps.freeText.handlePromptAnswer(resolved.userId, event.text, now);
+      return this.deps.freeText.handlePromptAnswer(resolved.userId, event.text);
     }
 
     // 9. Free text → M6.
-    if (this.deps.freeText === undefined) return { text: FREE_TEXT_NOT_WIRED_REPLY };
-    return this.deps.freeText.handleFreeText(resolved.userId, event.text, now);
+    return this.deps.freeText.handleFreeText(resolved.userId, event.text);
   }
 
   /**
@@ -275,8 +287,20 @@ export class TelegramDispatcher {
       return historyPage(this.commandServices(), resolved.userId, cursor);
     }
 
-    // `pc:` and `map:` arrive in 4D. Until their handlers exist, a press is stale by
-    // definition rather than silently ignored.
+    // Stage 4D's two buttons. Both carry nothing but yes/no — what they answer lives
+    // in `pending_prompt`, which is also how a typed "yes" reaches the same place
+    // (M11: every keyboard needs a free-text fallback). The handler is what decides
+    // a press with nothing open is stale; the dispatcher does not read the row.
+    const confirm = parseConfirmCallbackData(data);
+    if (confirm !== null) {
+      return this.deps.freeText.answerConfirm(resolved.userId, confirm);
+    }
+    const mapping = parseMappingCallbackData(data);
+    if (mapping !== null) {
+      return this.deps.freeText.answerMapping(resolved.userId, mapping);
+    }
+
+    // A prefix nothing claims. A press that does nothing is worse than one that says so.
     this.deps.logger.log('info', 'telegram.callback.unrouted', { prefix: data.split(':')[0] ?? '' });
     return renderRefusal('STALE_ACTION');
   }

@@ -46,6 +46,7 @@ export interface NewTransactionInput {
   rawText: string | null;
   parseRoute: ParseRoute;
   parseConfidence: number | null;
+  parseEventId: Id | null;
   now: Instant;
 }
 

@@ -176,6 +176,7 @@ export class InMemoryLedgerRepository implements LedgerRepository<InMemoryStore>
       rawText: input.rawText,
       parseRoute: input.parseRoute,
       parseConfidence: input.parseConfidence,
+      parseEventId: input.parseEventId,
       status: 'confirmed',
       createdAt: input.now,
       updatedAt: input.now,

@@ -138,6 +138,16 @@ describe('pendingPrompt', () => {
     ).rejects.toThrow();
   });
 
+  it.each(['confirm', 'clarify', 'mapping'] as const)('accepts the %s kind', async (kind) => {
+    // `mapping` is stage 4D's addition (migration 0009). This suite builds from the
+    // migration journal, so it is the thing that proves the widened constraint
+    // actually reached the schema a deploy would produce — the TypeScript union
+    // would happily claim it either way.
+    await repository.setPendingPrompt({ userId: USER, kind, payload: { a: 1 }, now: NOW });
+
+    expect(await repository.findPendingPrompt(USER)).toMatchObject({ kind });
+  });
+
   it('goes with the account when it is deleted', async () => {
     await repository.setPendingPrompt({ userId: USER, kind: 'confirm', payload: {}, now: NOW });
 

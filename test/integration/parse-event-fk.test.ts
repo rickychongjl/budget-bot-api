@@ -2,8 +2,10 @@ import { PGlite } from '@electric-sql/pglite';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DrizzleLedgerRepository } from '../../src/infrastructure/database/repositories/drizzle-ledger-repository';
 import { DrizzleMerchantMappingRepository } from '../../src/infrastructure/database/repositories/drizzle-merchant-mapping-repository';
 import { DrizzleParseEventRepository } from '../../src/infrastructure/database/repositories/drizzle-parse-event-repository';
+import type { Database } from '../../src/infrastructure/database/client';
 import { applyMigrations } from '../support/pglite-migrations';
 
 /**
@@ -24,6 +26,7 @@ describe('parse_event / merchant_category_mapping against a real Postgres (PGlit
   const db = drizzle(pg);
   const parseEvents = new DrizzleParseEventRepository(db);
   const mappings = new DrizzleMerchantMappingRepository(db);
+  const ledger = new DrizzleLedgerRepository(db as unknown as Database);
   const NOW = Date.parse('2026-09-06T02:00:00Z');
   const CATEGORY = '00000000-0000-4000-8000-0000000000c1';
   let userId: string;
@@ -52,6 +55,43 @@ describe('parse_event / merchant_category_mapping against a real Postgres (PGlit
     expect(survivors.rows).toEqual([{ id: parseEventId, user_id: null, route: 'llm', model: 'gpt-5.4-nano', input_tokens: 480 }]);
     const gone = await db.execute(sql`select count(*)::int as n from merchant_category_mapping`);
     expect((gone.rows[0] as { n: number }).n).toBe(0);
+  });
+
+  it('a transaction survives its parse_event being retired, with the reference nulled (M6 open question 2, closed M7 stage 4D)', async () => {
+    // Its own user: the first test in this file deletes `userId`'s app_user row.
+    const rows = await db.execute(sql`insert into app_user (timezone) values ('Australia/Perth') returning id`);
+    const txUserId = (rows.rows[0] as { id: string }).id;
+
+    const parseEventId = await parseEvents.record(
+      { userId: txUserId, route: 'llm', model: 'gpt-5.4-nano', inputTokens: 480, outputTokens: 52, latencyMs: 210, neededClarification: false },
+      NOW,
+    );
+    const tx = await ledger.insertTransaction({
+      userId: txUserId,
+      categoryId: null,
+      budgetPeriodId: null,
+      direction: 'income',
+      amountMinorUnits: 8240n,
+      currencyCode: 'AUD',
+      occurredOn: '2026-09-06',
+      occurredAt: NOW,
+      merchantDisplay: null,
+      normalizedMerchant: null,
+      note: null,
+      rawText: 'salary 82.40',
+      parseRoute: 'llm',
+      parseConfidence: 0.96,
+      parseEventId,
+      now: NOW,
+    });
+    expect(tx.parseEventId).toBe(parseEventId);
+
+    // M9's retention pass (or any deletion) can retire a parse_event while the
+    // transaction it produced is still live — the transaction must not go with it.
+    await db.execute(sql`delete from parse_event where id = ${parseEventId}`);
+
+    const survivor = await ledger.findTransaction(txUserId, tx.id);
+    expect(survivor).toMatchObject({ id: tx.id, parseEventId: null });
   });
 
   it('markCorrected flips was_corrected (the M3 → M9 callback)', async () => {

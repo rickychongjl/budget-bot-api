@@ -32,6 +32,15 @@ export interface ValidatedCandidate {
   rawText: string;
   parseRoute: ParseRoute;
   parseConfidence?: number;
+  /**
+   * The `parse_event` row this candidate was parsed from, when there is one — a 4C-style
+   * direct command write has none. Set by `TransactionParsingPipeline.persist` just
+   * before recording, never by the validator: the id only exists once `parse_event` has
+   * been written, which happens after validation succeeds. Carried through to
+   * `Transaction` so a later `correct()` can attribute the fix back to it
+   * (`LedgerCorrectionNotifier`, `core/ledger/collaborators.ts`).
+   */
+  parseEventId?: Id | null;
 }
 
 export interface Transaction {
@@ -50,6 +59,8 @@ export interface Transaction {
   rawText: string | null;
   parseRoute: ParseRoute;
   parseConfidence: number | null;
+  /** Null for anything not written from a parse (M7 stage 4D). */
+  parseEventId: Id | null;
   status: TransactionStatus;
   createdAt: Instant;
   updatedAt: Instant;

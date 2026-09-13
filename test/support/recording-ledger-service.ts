@@ -33,6 +33,7 @@ export class RecordingLedgerService implements LedgerService {
       rawText: candidate.rawText,
       parseRoute: candidate.parseRoute,
       parseConfidence: candidate.parseConfidence ?? null,
+      parseEventId: candidate.parseEventId ?? null,
       status: 'confirmed',
       createdAt: at,
       updatedAt: at,

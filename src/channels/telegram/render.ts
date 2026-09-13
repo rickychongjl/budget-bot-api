@@ -4,8 +4,10 @@ import type { UserSettings } from '../../core/identity/identity-service';
 import type { AccountSummary, OnboardingPrompt, OnboardingReply } from '../../core/identity/onboarding';
 import type { TransactionDirection } from '../../core/ledger/ledger-service';
 import type { CurrencyCode, LocalDate, MinorUnits, RefusalCode, Tier } from '../../core/shared/common';
+import { addLocalDays } from '../../core/shared/local-date';
 import type { OutboundMessage } from '../../core/shared/messaging';
 import { sanitiseDisplayText } from '../../core/shared/text';
+import type { MappingProposal } from '../../parsing/types';
 
 /**
  * M7 renders; it never computes. Every number in here arrives already calculated by
@@ -356,6 +358,151 @@ export function renderHistoryPage(
       inline_keyboard: [[{ text: 'More', callback_data: data }]],
     } satisfies InlineKeyboardMarkup,
   };
+}
+
+// ---- stage 4D's free-text path --------------------------------------------------
+
+/**
+ * What a confirmation or a confirm-question says about one entry. Deliberately not
+ * `Transaction` or `ValidatedCandidate`: a `confirm` prompt has to describe something
+ * that does not exist yet, and a `recorded` confirmation describes something that
+ * does. The two read identically to the user, so they render through one shape.
+ *
+ * Every field arrives decided — the amount from M3, the category name from M6's
+ * resolution, the date from the validator. Nothing here works anything out.
+ */
+export interface EntryLine {
+  direction: TransactionDirection;
+  amountMinorUnits: MinorUnits;
+  occurredOn: LocalDate;
+  merchant: string | null;
+  categoryName: string | null;
+}
+
+/**
+ * "Recorded $12.50 at Woolworths under Groceries, yesterday."
+ *
+ * M7's page: "Confirmations lead with what was recorded, then the updated allowance
+ * on its own line." The allowance line is the caller's — it comes from M5's
+ * `renderAllowanceLine`, so `/today`, the 07:00 reminder and a logging confirmation
+ * cannot word the same figure three different ways.
+ */
+export function renderRecorded(entry: EntryLine, currency: CurrencyCode, today: LocalDate): string {
+  return `Recorded ${describeEntry(entry, currency, today)}.`;
+}
+
+/**
+ * M6 parsed it but was not confident enough to record it, so the user decides.
+ *
+ * The buttons and the typed fallback are both offered, because M11's shared contract
+ * requires every keyboard to be answerable by typing — an old message scrolled out of
+ * reach still has to be answerable.
+ */
+export function renderConfirmPrompt(
+  entry: EntryLine,
+  currency: CurrencyCode,
+  today: LocalDate,
+): OutboundMessage {
+  return {
+    text: `Should I record ${describeEntry(entry, currency, today)}?\n\nTap a button below, or just reply yes or no.`,
+    replyMarkup: yesNoKeyboard(confirmCallbackData(true), confirmCallbackData(false)),
+  };
+}
+
+/**
+ * M6's suggested copy, verbatim: "Always categorise Woolworths as Groceries?"
+ *
+ * `lead` is the confirmation the transaction already earned — the question rides on
+ * the same message rather than arriving as a second one (M11: one reply per input
+ * step). The entry is recorded either way; this only decides whether the bot
+ * remembers the merchant next time.
+ */
+export function renderMappingQuestion(proposal: MappingProposal, lead?: string): OutboundMessage {
+  const question = `Always categorise ${sanitiseDisplayText(proposal.displayMerchant)} as ${sanitiseDisplayText(proposal.categoryName)}?`;
+  return {
+    text: lead === undefined ? question : `${lead}\n\n${question}`,
+    replyMarkup: yesNoKeyboard(mappingCallbackData(true), mappingCallbackData(false)),
+  };
+}
+
+/** `pc:yes` / `pc:no` — the answer to a `confirm` prompt. */
+export function confirmCallbackData(yes: boolean): string {
+  return `pc:${yes ? 'yes' : 'no'}`;
+}
+
+export function parseConfirmCallbackData(data: string): boolean | null {
+  return parseYesNo('pc:', data);
+}
+
+/** `map:yes` / `map:no` — the answer to "always categorise X as Y?". */
+export function mappingCallbackData(yes: boolean): string {
+  return `map:${yes ? 'yes' : 'no'}`;
+}
+
+export function parseMappingCallbackData(data: string): boolean | null {
+  return parseYesNo('map:', data);
+}
+
+function parseYesNo(prefix: string, data: string): boolean | null {
+  if (!data.startsWith(prefix)) return null;
+  const answer = data.slice(prefix.length);
+  if (answer === 'yes') return true;
+  if (answer === 'no') return false;
+  return null;
+}
+
+function yesNoKeyboard(yes: string, no: string): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Yes', callback_data: yes },
+        { text: 'No', callback_data: no },
+      ],
+    ],
+  };
+}
+
+/** `$12.50 at Woolworths under Groceries, yesterday` — no verb, no full stop. */
+function describeEntry(entry: EntryLine, currency: CurrencyCode, today: LocalDate): string {
+  const amount = formatMoney(entry.amountMinorUnits, currency);
+  const merchant = entry.merchant === null ? null : sanitiseDisplayText(entry.merchant);
+  const category = entry.categoryName === null ? null : sanitiseDisplayText(entry.categoryName);
+
+  const parts: string[] = [];
+  switch (entry.direction) {
+    case 'income':
+      // Income never has a category — it does not offset a cap (M3/M5).
+      parts.push(`${amount} income`);
+      if (merchant !== null) parts.push(`from ${merchant}`);
+      break;
+    case 'refund':
+      parts.push(`a ${amount} refund`);
+      if (merchant !== null) parts.push(`from ${merchant}`);
+      if (category !== null) parts.push(`to ${category}`);
+      break;
+    case 'expense':
+      parts.push(amount);
+      if (merchant !== null) parts.push(`at ${merchant}`);
+      parts.push(category === null ? '(uncategorised)' : `under ${category}`);
+      break;
+  }
+
+  const when = describeWhen(entry.occurredOn, today);
+  return when === null ? parts.join(' ') : `${parts.join(' ')}, ${when}`;
+}
+
+/**
+ * Today says nothing — most entries are today's, and "Recorded $5, today" reads like
+ * a receipt. Anything else is named, because a backdated entry landing on the wrong
+ * day is the mistake this sentence exists to let the user catch.
+ *
+ * `addLocalDays` is the shared calendar helper, not arithmetic invented here: the
+ * date itself was decided by M6's validator, and this only chooses a word for it.
+ */
+function describeWhen(occurredOn: LocalDate, today: LocalDate): string | null {
+  if (occurredOn === today) return null;
+  if (occurredOn === addLocalDays(today, -1)) return 'yesterday';
+  return `on ${formatShortDate(occurredOn)}`;
 }
 
 // ---- dates ----------------------------------------------------------------------

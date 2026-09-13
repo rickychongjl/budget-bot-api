@@ -5,14 +5,17 @@ import { defineConfig } from 'vitest/config';
  * Test tiers (M1 §7):
  *   - unit        `test/unit/**`        — pure `core/domain` logic, no DB, no Worker.
  *   - integration `test/integration/**` — against a real Neon branch (constraints do real work).
- *   - eval        M6's versioned NLP set — added with M6.
+ *   - eval        `test/eval/**` — M6's versioned NLP set, added with M6. Had no
+ *                 matching entry in `projects` below since that array was introduced,
+ *                 so it silently stopped running on every `npm test` and in CI —
+ *                 restored 13 Sep 2026.
  *   - e2e         deliberately manual. M7 4B's plan settled this: production is the
  *                 only environment (master plan §5.7), so there is no staging Worker
  *                 to point an automated round trip at. Stage 4E's checklist — a real
  *                 `/internal/send-allowance` and a real `/start` against Ricky's own
  *                 chat — is the e2e tier for this pass.
  *
- * `passWithNoTests` keeps CI green while the integration/eval suites are still empty.
+ * `passWithNoTests` keeps CI green if any tier's suite is ever emptied out again.
  */
 
 /**
@@ -78,6 +81,22 @@ export default defineConfig(({ mode }) => ({
           include: ['test/integration/**/*.test.ts'],
           fileParallelism: false,
         },
+      },
+      /**
+       * M6's own versioned NLP set (`test/eval/*.eval.test.ts`), restored 13 Sep 2026.
+       * With `projects` configured, a file is only collected if some project's
+       * `include` matches it — there had been no `eval` project since this array was
+       * introduced, so `deterministic.eval.test.ts`'s 158 labelled cases and
+       * `live-llm.eval.test.ts` had been silently excluded from both `npm test` and
+       * CI (`npx vitest run test/eval/...` reported "No test files found" even
+       * pointed at the file directly). Safe to run by default alongside the other two
+       * tiers: the deterministic suite needs no DB and no network, and the live suite
+       * self-skips via `describe.skipIf(!apiKey)` — exactly how the "integration"
+       * project's two Neon-only files already skip without `DATABASE_URL`.
+       */
+      {
+        extends: true,
+        test: { name: 'eval', include: ['test/eval/**/*.eval.test.ts'] },
       },
     ],
   },

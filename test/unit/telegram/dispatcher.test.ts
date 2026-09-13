@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   APOLOGY,
-  FREE_TEXT_NOT_WIRED_REPLY,
   GROUP_CHAT_REPLY,
   PAYMENTS_NOT_LIVE_REPLY,
   TEXT_ONLY_REPLY,
 } from '../../../src/channels/telegram/dispatcher';
+import { encodePendingPayload } from '../../../src/channels/telegram/pending-payload';
 import { UNKNOWN_COMMAND } from '../../../src/channels/telegram/commands/catalogue';
 import { parseUpdate } from '../../../src/channels/telegram/update-parser';
 import { BILLING_NOT_CONFIGURED_MESSAGE } from '../../../src/core/entitlements/billing';
@@ -152,8 +152,9 @@ describe('event kinds', () => {
   });
 
   it('always acknowledges a callback query, even an unrouted one', async () => {
-    // `pc:` is 4D's prefix; nothing routes it yet, so the press is stale by definition.
-    await dispatch(callbackUpdate('pc:yes'));
+    // `cat:` is the prefix stage 4C decided *not* to introduce (/categories takes
+    // arguments instead), so nothing claims it — a press is stale by definition.
+    await dispatch(callbackUpdate('cat:add'));
 
     expect(h.callbacks.answered).toHaveLength(1);
     expect(h.sender.onlyText).toContain('out of date');
@@ -186,11 +187,19 @@ describe('event kinds', () => {
 });
 
 describe('commands beat a pending prompt (M11 revision)', () => {
+  const QUESTION = 'How much was it?';
+
   beforeEach(async () => {
     await h.gateway.setPendingPrompt({
       userId: USER,
       kind: 'clarify',
-      payload: { question: 'which category?' },
+      payload: encodePendingPayload({
+        kind: 'clarify',
+        original: 'woolies',
+        reason: 'no_amount',
+        question: QUESTION,
+        parseEventId: 'pe-1',
+      }),
       now: h.clock.now(),
     });
   });
@@ -210,15 +219,27 @@ describe('commands beat a pending prompt (M11 revision)', () => {
       // The prompt survives — these commands answer a question *about* the bot, they
       // do not abandon the user's conversation.
       expect(h.gateway.has(USER)).toBe(true);
-      expect(h.sender.onlyText).not.toBe(FREE_TEXT_NOT_WIRED_REPLY);
+      expect(h.sender.onlyText).not.toBe(QUESTION);
     },
   );
 
   it('free text is still treated as the answer', async () => {
-    await dispatch(textUpdate('groceries'));
+    const food = await h.seedCategory(USER, 'Food', { cap: 60000n });
+    h.mappings.seed({
+      userId: USER,
+      normalizedMerchant: 'woolies',
+      displayMerchant: 'Woolworths',
+      categoryId: food,
+      source: 'user_confirmed',
+    });
 
-    // 4D supplies the handler; 4B proves the branch is reached.
-    expect(h.sender.onlyText).toBe(FREE_TEXT_NOT_WIRED_REPLY);
+    await dispatch(textUpdate('12.50'));
+
+    // The answer reached M6 *as an answer*: "12.50" on its own names no merchant, so
+    // only a parse that merged it with the question's original message could have
+    // found Woolworths.
+    expect(h.sender.onlyText).toContain('Recorded $12.50 at Woolworths under Food');
+    expect(h.gateway.has(USER)).toBe(false);
   });
 });
 

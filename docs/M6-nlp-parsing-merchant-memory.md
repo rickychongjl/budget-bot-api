@@ -77,6 +77,8 @@ The server is authoritative — reject malformed amounts, impossible dates, unsu
 ## Clarification policy — never guess
 Clarify rather than guess for: `Alex gave me 80` (income/refund/reimbursement?), `spent 30 last night` (missing category/merchant), `coffee 5 and lunch 16` (multiple transactions — ask to split, per this pass's scope), `cancel the coffee from yesterday` (needs resolving a previous transaction), a merchant like Amazon that spans categories. Low LLM confidence is one signal among several — missing fields, conflicting extractors, and failed server validation also force clarification.
 
+**Answering a clarification is M6's, not the channel's — `answerClarification(context, original, reason, answer)` (added 13 Sep 2026, M7 stage 4D).** Whether the answer *replaces* the original message or *extends* it depends on why we asked, which is a fact about the parser: `multiple_amounts`, `invalid_amount`, `foreign_currency`, `ambiguous_date`, `invalid_date` and `correction_intent` all mean the original text is itself the problem, so keeping it would re-trigger the same guard and ask the same question forever — the answer stands alone. Every other reason means the original was fine but incomplete, so the answer is appended. The merged text then runs the ordinary `parse` path, so an answered attempt writes exactly one new `parse_event` row and passes every validation rule unchanged. M7 holds the conversation state; it does not hold this policy.
+
 ## Merchant memory
 ```sql
 -- MerchantCategoryMapping — implement as a real table, e.g. merchant_category_mapping

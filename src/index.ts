@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { createCatalogue } from './channels/telegram/commands/catalogue';
 import { TelegramDispatcher } from './channels/telegram/dispatcher';
+import { TelegramFreeTextHandler } from './channels/telegram/free-text';
 import type { GatewayRepository } from './channels/telegram/gateway-repository';
 import { TelegramApiClient } from './channels/telegram/telegram-api-client';
 import { TelegramMessageSender } from './channels/telegram/telegram-message-sender';
@@ -19,6 +20,7 @@ import type { DueUser } from './core/allowance/allowance-service';
 import type { Clock } from './core/shared/clock';
 import type { UserId } from './core/shared/common';
 import type { MessageSender } from './core/shared/messaging';
+import { createParsingPipeline } from './infrastructure/create-parsing-pipeline';
 import { createDatabase } from './infrastructure/database/client';
 import { DrizzleAllowanceRepository } from './infrastructure/database/repositories/drizzle-allowance-repository';
 import { DrizzleBudgetRepository } from './infrastructure/database/repositories/drizzle-budget-repository';
@@ -101,7 +103,7 @@ export type ServicesFactory = (env: Env) => Services;
 /**
  * The wiring each module's own `index.ts` header prescribes, in dependency order.
  *
- * Three cycles are unavoidable and are broken the same way M5's test harness breaks
+ * Four cycles are unavoidable and are broken the same way M5's test harness breaks
  * them — with a closure that reads the finished service later, never a half-built
  * object handed out early:
  *
@@ -110,6 +112,8 @@ export type ServicesFactory = (env: Env) => Services;
  *   - M5 needs M3 (`spendInPeriod`/`spentOn`) and M3 needs M5 (`AllowanceNotifier`).
  *   - M5 needs M4 (`ensurePeriod`) and M4 needs M5 (`BudgetAllowanceNotifier`, so a
  *     cap change re-prices today's figure).
+ *   - M3 needs M6 (`LedgerCorrectionNotifier`, so `correct()` can flip
+ *     `parse_event.was_corrected`) and M6 needs M3 (`LedgerService.record`).
  */
 export function createServices(env: Env, options: CreateServicesOptions = {}): Services {
   const clock = options.clock ?? new SystemClock();
@@ -203,6 +207,10 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
     settingsOf,
     clock,
     allowance,
+    // Cycle 4 (M6 open question 2, closed stage 4D): resolved after `parsing` exists,
+    // below. `TransactionParsingPipeline` satisfies `LedgerCorrectionNotifier`
+    // structurally — `core/ledger` never imports `src/parsing`.
+    correction: { onTransactionCorrected: (parseEventId) => parsing.onTransactionCorrected(parseEventId) },
   });
 
   const categories = new DefaultCategoryService({
@@ -221,6 +229,28 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
     categories,
     budgets,
     reminders,
+    clock,
+  });
+
+  // --- M6, and M7's free-text path (stage 4D) ------------------------------------
+  // `createParsingPipeline` is the one place the technology-free parsing module meets
+  // its Drizzle and OpenAI adapters. Constructing `OpenAiLlmParser` makes no network
+  // call — the key is held, not used — so this is as cheap as any other repository.
+  const parsing = createParsingPipeline({
+    db,
+    clock,
+    openAiApiKey: env.OPENAI_API_KEY,
+    ledger,
+    allowance,
+    logger,
+  });
+
+  const freeText = new TelegramFreeTextHandler({
+    pipeline: parsing,
+    identity,
+    categories,
+    allowance,
+    gateway: gatewayRepository,
     clock,
   });
 
@@ -248,8 +278,7 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
       clock,
       logger,
       supportContact: env.SUPPORT_CONTACT,
-      // `freeText` arrives in stage 4D with the parsing pipeline; until then the
-      // dispatcher answers those two branches with an honest "not yet".
+      freeText,
     }),
     gateway: gatewayRepository,
     clock,

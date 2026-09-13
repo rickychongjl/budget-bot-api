@@ -865,7 +865,8 @@ TODO instructed.
    `parse_event_id`. Proposal: M3 adds `parse_event_id uuid references
    parse_event(id) on delete set null` to `transaction` and calls
    `ParseEventCorrectionHook.onTransactionCorrected(parseEventId)`. Until then the
-   hook exists and is tested but has no caller.
+   hook exists and is tested but has no caller. **Closed 13 September 2026** — see
+   "M3/M6 — the correction feedback loop closes" below.
 3. **`merchant_category_mapping.category_id` FK.** Declared as a bare `uuid not null`
    because M3's `category` table is Phase 2. When M3's schema lands, add
    `.references(() => category.id, { onDelete: 'cascade' })` (a mapping to a deleted
@@ -1980,3 +1981,277 @@ touches M4's tables or the PGlite helper.
 
 `npx drizzle-kit generate` after the schema change — "No schema changes, nothing to
 migrate".
+
+## M7 stage 4D — The free-text path — 2026-09-13
+
+Phase 4's fourth stage, and the one the product is actually for. 4A gave the bot a
+voice, 4B gave it ears, 4C gave it commands; this is the part where you type
+"woolies 12.50" and it understands you.
+
+M6's pipeline has been finished and tested since Phase 1 and has never been called by
+anything. `pending_prompt` has existed since 4B and has never been written to. This
+stage connects both, and adds the conversation that sits between them.
+
+### Built
+
+- **`channels/telegram/free-text.ts`** — `TelegramFreeTextHandler`. Builds
+  `UserParseContext` from M2's `getSettings` and M3's non-archived category list,
+  calls M6, writes or clears `pending_prompt`, and renders. No arithmetic and no
+  policy; the one judgement it makes is reading "yes" as yes.
+- **`channels/telegram/pending-payload.ts`** — the jsonb codec. Zod schemas for the
+  three payload shapes, minor units as decimal text in both directions, and `null`
+  rather than an exception for anything that does not fully validate.
+- **`render.ts`** — `renderRecorded`, `renderConfirmPrompt`, `renderMappingQuestion`,
+  and the `pc:` / `map:` callback helpers. The confirmation leads with what was
+  recorded and puts M5's `renderAllowanceLine` on the next line, which is M7's page
+  verbatim.
+- **`TransactionParsingPipeline.answerClarification`** (M6) — see the first decision
+  below. One line added to `docs/M6-nlp-parsing-merchant-memory.md`.
+- **`pending_prompt.kind` gains `'mapping'`** — migration `0009`, with the journal tag
+  renamed to `0009_pending_prompt_mapping_kind` the way `0007` and `0008` are.
+- **The dispatcher's steps 8 and 9 are live.** `freeText` is a required dependency,
+  `FREE_TEXT_NOT_WIRED_REPLY` is gone, and `pc:` / `map:` route in `routeCallback`.
+- **`/cancel` is kind-aware.** A `mapping` question is asked *after* the entry is
+  recorded, so "Nothing was recorded" there is a plain lie about the user's own
+  ledger — the kind that sends someone to `/delete` to fix something that is not
+  broken.
+- **`src/index.ts`** wires `createParsingPipeline` and the handler. `createServices`
+  gains its first test: the composition root was otherwise only ever exercised in
+  production.
+
+### Decisions taken (Ricky, 13 Sep 2026)
+
+- **`answerClarification` is M6's, not M7's.** The stage sketch had M7 re-parsing "the
+  original text with the answer appended". That is wrong for half the reasons we ask:
+  appending "4.50" to "coffee 4,50" still contains a decimal comma, appending a day to
+  a message carrying an impossible date still contains the impossible date, and both
+  ask the same question forever. Which reasons behave which way is a fact about the
+  parser, so the rule lives with the parser. `multiple_amounts`, `invalid_amount`,
+  `foreign_currency`, `ambiguous_date`, `invalid_date` and `correction_intent` mean the
+  original text is itself the problem and the answer stands alone; everything else
+  means the original was fine but incomplete and the answer extends it. The merged text
+  runs the ordinary `parse` path, so an answered attempt writes exactly one
+  `parse_event` and passes every validation rule unchanged.
+- **A third `PendingPromptKind`, `'mapping'`, and migration 0009.** "Always categorise
+  Woolworths as Groceries?" is asked after the transaction exists and is answered by a
+  later update, so the proposal has to survive the invocation. It cannot ride in the
+  button — a `MappingProposal` is four fields against Telegram's 64-byte
+  `callback_data` — and M11 requires every keyboard to have a free-text fallback, so a
+  typed "yes" has to find the same proposal. Stage 4C recorded the two-kind constraint
+  as its reason for making `/categories` and `/remind` argument-driven; this is the
+  migration that decision predicted, taken deliberately rather than by accident.
+- **Callback taps stay admitted messages.** The dispatcher admits at step 3, before it
+  looks at the event kind, so a `pc:yes` or `map:yes` press counts against M8's
+  fair-use window and, on Free, the 5-per-day cap. Ricky's ruling: this stays as it is,
+  on the condition a user can finish onboarding before the daily cap applies — which is
+  already true (`skipDailyCap: !resolved.onboarded`, migration 0006's
+  `counts_toward_daily`). **The cost, recorded so it is not rediscovered as a bug: an
+  expense that needs confirming costs a Free user 2 of their 5 daily messages, and 3 if
+  they also answer the merchant question.** Worth revisiting only if the confirm
+  threshold turns out to fire often in real use.
+- **Anything that is not yes or no supersedes a yes/no question.** Someone who types a
+  second expense while a confirmation is open wants that expense logged, not read as an
+  answer about the first one. A `clarify` is the opposite: it asked for text, so any
+  text is its answer.
+
+### Assumed
+
+- **The day is named only when it is not today.** "Recorded $5, today" reads like a
+  receipt; a backdated entry landing on the wrong day is exactly the mistake the
+  sentence exists to let someone catch. Yesterday gets the word, anything else gets
+  "on 5 Sep".
+- **The replacing branch of `answerClarification` can cost a second round trip.**
+  Answer "the 30th" to "which day was it?" and the merchant and amount go with the bad
+  date, so the next question asks for them. Each step converges and nothing loops.
+  Reconstructing the good half of the original would mean trusting the mechanical
+  parser's residual description — and the decimal-comma case is precisely where that
+  cannot be trusted, since "4,50" survives into the residual as "4 50".
+- **The yes/no vocabulary is deliberately small** (`yes/y/yep/yeah/yup/ok/okay/sure/please do`,
+  `no/n/nope/nah/don't/dont`). Everything else supersedes, so the cost of being
+  conservative is that "yep 12.50 coffee" logs a coffee — which is what it says.
+- **The clarify payload stores the original message text**, which is new for this
+  table. Not a new class of data — the same text reaches `transaction.raw_text` the
+  moment the entry records — and it is cleared on an answer, on `/cancel`, or by a
+  superseding message. **But an abandoned prompt keeps it until the user's next
+  message, which is an M9 retention item rather than something this stage should invent
+  a policy for.**
+- **A `confirm` answered yes usually leaves a `mapping` question open, not an empty
+  table.** That is the flow working: the entry records, and the merchant offer is the
+  next thing the conversation is waiting on.
+
+### Fixed in passing
+
+- **The handler was asking Telegram what day it was.** It decided "was this today?"
+  from the dispatcher's `now`, which is the sender's timestamp off the update, while M6
+  stamps the transaction from its own injected `Clock`. In the unit harness the two are
+  a day apart and every confirmation read "…under Food, on 11 Sep"; in production they
+  differ by seconds, which is enough to call today's entry yesterday's on either side
+  of a local midnight. `FreeTextHandler` now takes no `now` at all and the handler
+  holds the clock M6 and M3 stamp with. The sender's timestamp stays where it belongs,
+  in M8's admission windows.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors.
+
+`npx vitest run` — **729 passed / 9 skipped** across 51 files, up from 656: 73 new
+tests. Two new suites (`test/unit/telegram/free-text.test.ts`, 25;
+`test/unit/telegram/pending-payload.test.ts`, 13) plus 35 appended to existing ones —
+18 in `pipeline.test.ts` for `answerClarification`, 13 in `render.test.ts`, 3 in
+`test/integration/gateway.test.ts` for the widened constraint, 1 in
+`composition-root.test.ts` for `createServices`. The 9 skipped are the Neon-gated
+integration suites, skipped because this worktree has no `.env`.
+
+Two 4B assertions changed, both because they described 4D as pending: `pc:yes` is no
+longer an unrouted callback prefix (`cat:` is, and deliberately so), and free text
+during an open prompt now reaches M6 rather than the placeholder. The second got
+stronger rather than merely rewritten — it answers "How much was it?" with "12.50" and
+asserts Woolworths comes back, which only a merged parse can do. No other existing
+test changed.
+
+`npm run db:generate` — `0009_pending_prompt_mapping_kind`, one `DROP CONSTRAINT` plus
+one `ADD CONSTRAINT`, inspected and committed with its snapshot.
+`test/integration/gateway.test.ts` builds from the migration journal, so the widened
+constraint is proven against real Postgres (PGlite) rather than only in the TypeScript
+union.
+
+`npm run test:integration` — **not run.** The Neon suites need `DATABASE_URL` in a
+`.env` this worktree does not have, and `0009` has not been applied to the Neon branch
+in any case. **`npm run db:migrate` is Ricky's step, before that suite will pass and
+before 4E deploys.**
+
+**Nothing here has been deployed or seen a real Telegram message.** `setWebhook` is
+stage 4E, and production is the only environment (master plan §5.7).
+
+### Open questions
+
+1. ~~**`DefaultLedgerService` still does not call `ParseEventCorrectionHook`.**~~
+   **Closed 13 September 2026** — see "M3/M6 — the correction feedback loop closes"
+   below. M6's open question 2 sat out of 4D's original scope; raised again the same
+   day once 4D shipped the first parse actually worth correcting, and closed then.
+2. **The confirm threshold has never been seen against a real model.** 0.5–0.85 asks
+   the user; above 0.85 records. Both numbers are M6's untuned defaults, and how often
+   the middle band fires is what decides whether the two-messages-per-expense cost
+   above is a footnote or a problem. 4E's manual walkthrough is the first chance to
+   look.
+3. **`readYesNo` is English-only and will stay that way until someone asks.** Worth
+   naming because the typed fallback is what makes the keyboards answerable at all, and
+   it only works in one language.
+
+---
+
+## M3/M6 — the correction feedback loop closes — 2026-09-13
+
+M6's open question 2 (6 Sep) and 4D's open question 1 (13 Sep, above), closed the same
+day: `LedgerService.correct()` now tells M6 when a parsed transaction is fixed, so
+`parse_event.was_corrected` — M9's own words, "the only honest measure of parser
+accuracy" — stops being permanently false.
+
+### Built
+
+- **`transaction.parse_event_id`** — nullable `uuid references parse_event(id) on
+  delete set null` (migration `0010`). Null for anything not written from a parse — a
+  4C-style direct command write, or a row recorded before this migration. `set null`
+  rather than `cascade`: a transaction outlives the retention pass that may later prune
+  its parse event (M9's territory, unchanged).
+- **`ValidatedCandidate.parseEventId?: Id | null`** and **`Transaction.parseEventId: Id
+  | null`** (`core/ledger/ledger-service.ts`). The candidate's field is optional and set
+  in exactly one place — `TransactionParsingPipeline.persist`, just before the ledger
+  call — because the id is generated by `logEvent` *after* validation, never by the
+  validator itself.
+- **`LedgerCorrectionNotifier`** (`core/ledger/collaborators.ts`), M3's own outgoing
+  port for this, not an import of M6's `ParseEventCorrectionHook`: `src/parsing`
+  already imports `ValidatedCandidate`/`Transaction` from `core/ledger`, so importing
+  M6's port back into M3 would be a cross-module cycle. `TransactionParsingPipeline`
+  satisfies the new port structurally — same shape, no shared import — and the
+  composition root wires the two together with a closure, exactly the pattern already
+  used for the identity/ledger, allowance/budgets and allowance/ledger cycles. `correct()`
+  calls it once, unconditionally, whenever the existing transaction carries a
+  `parseEventId`; a failure is swallowed the same way `notifyAllowance`'s is, because
+  the correction itself has already committed.
+- Drizzle and in-memory ledger repositories, and the pipeline test double
+  (`RecordingLedgerService`), all map the new column/field through.
+
+### Assumed
+
+- **The hook fires on every correction, not only one that changes amount or
+  category.** M9's own comment ("`was_corrected` is written later by M3's `correct`")
+  and M6's doc describe no narrower trigger, and a note-only correction is still a
+  correction in the sense the metric measures.
+- **Nothing backfills `parse_event_id` on rows recorded before this migration.** They
+  keep reading `null` forever, which is correct — they were never attributed to a
+  parse event to begin with under the old schema.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors.
+
+`npm test` — **742 passed / 0 skipped** (this environment now has `DATABASE_URL` set),
+up from 738: 4 new tests in `test/unit/ledger/default-ledger-service.test.ts` (the hook
+fires with a `parseEventId`, stays silent without one, and a failure doesn't fail the
+correction) plus one new PGlite case in `test/integration/parse-event-fk.test.ts`
+(a transaction survives its `parse_event` being deleted, with the reference nulled —
+the real foreign key and `on delete set null`, not an in-memory stand-in for it).
+
+`npm run test:integration` — **90 passed / 0 failed.** This proves nothing new about
+the real Neon branch specifically: the two Postgres-gated files that touch it
+(`entitlements.test.ts`, `identity.test.ts`) don't read or write `transaction`, and
+every file that does (`ledger-budgets.test.ts`, `parse-event-fk.test.ts`) runs on a
+fresh PGlite instance built from the committed migrations, not against Neon's current
+state. A direct read against the branch confirms `transaction` does not yet have
+`parse_event_id`. **`npm run db:migrate` is still needed before this reaches
+production** — flagged rather than run, the same as `0005`/`0006` were.
+
+`npm run db:generate` — `0010_puzzling_dormammu.sql`, inspected and committed with its
+snapshot; one `alter table` adding the column, one adding the foreign key.
+
+### Open questions
+
+None new. M6's own open question 2 and 4D's open question 1 are both closed by this.
+
+---
+
+## Testing infra — M6's eval suite was silently dead — 2026-09-13
+
+Found while answering "is there an end-to-end test for a user's natural-language
+message reaching M6?" — the honest answer was that the closest thing to one,
+`test/eval/deterministic.eval.test.ts` (158 labelled realistic messages against the
+real pipeline) and `test/eval/live-llm.eval.test.ts` (the same style against the real
+model), existed and were well-built but had not run on a single `npm test` or CI
+build since `vitest.config.ts` was split into `projects`. With `projects` configured,
+a file is only collected if some project's `include` matches it, and only `unit` and
+`integration` were ever defined — `npx vitest run test/eval/deterministic.eval.test.ts`
+reported "No test files found" even pointed straight at the file. The original M6 PR's
+build-log entry ("Tests: 71 pass, 1 skipped (the live eval)") shows the suite really did
+run before that split; nobody re-added it after.
+
+### Built
+
+- **`vitest.config.ts`** — a third project, `eval`, matching `test/eval/**/*.eval.test.ts`.
+  Runs by default alongside `unit` and `integration` on plain `npm test`/CI, the same
+  as the `integration` project's two Neon-gated files already do: the deterministic
+  suite needs no DB and no network, and the live suite self-skips via
+  `describe.skipIf(!apiKey)` exactly like those two skip without `DATABASE_URL`.
+  Confirmed safe before landing this: this environment's `.env` carries an empty
+  `OPENAI_API_KEY=` line, and the live suite skipped rather than making a real call.
+- **`package.json`** — `test:eval` script (`vitest run --project eval`), mirroring
+  `test:integration`, for running just this tier — e.g. with a real
+  `OPENAI_API_KEY` set, to score the live suite without re-running everything else.
+
+### Verification
+
+`npm run test:eval` — **2 passed / 1 skipped** (the live suite, no key configured).
+
+`npm test` — **744 passed / 1 skipped**, up from 742 passed / 0 skipped: the two eval
+tests, one of which is the live suite's permanent skip in an environment with no
+usable key.
+
+`npm run typecheck` — clean, 0 errors.
+
+### Open questions
+
+1. **Should CI set `OPENAI_API_KEY` and actually run the live suite?** It costs money
+   and is non-deterministic by design, which is exactly why `live-llm.eval.test.ts`'s
+   own header says "never in CI by default" — restoring collection doesn't change that
+   call, since it still needs a key CI does not have. Worth a deliberate decision
+   separate from this fix, not a default to fall into.

@@ -2,14 +2,21 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_INLINE_OPTIONS,
   TELEGRAM_MAX_MESSAGE,
+  confirmCallbackData,
   formatShortDate,
   historyCallbackData,
+  mappingCallbackData,
   paginate,
+  parseConfirmCallbackData,
   parseHistoryCallbackData,
+  parseMappingCallbackData,
   refusalText,
   renderAccountSummary,
+  renderConfirmPrompt,
   renderHistoryPage,
+  renderMappingQuestion,
   renderOnboardingReply,
+  renderRecorded,
   renderRefusal,
 } from '../../../src/channels/telegram/render';
 import type { AccountSummary, OnboardingPrompt } from '../../../src/core/identity/onboarding';
@@ -236,5 +243,151 @@ describe('short dates', () => {
 
   it('returns anything unparseable unchanged rather than inventing a month', () => {
     expect(formatShortDate('not-a-date')).toBe('not-a-date');
+  });
+});
+
+// ---- stage 4D ---------------------------------------------------------------------
+
+describe('recorded confirmations', () => {
+  const TODAY = '2026-09-11';
+
+  const expense = {
+    direction: 'expense' as const,
+    amountMinorUnits: 1250n,
+    occurredOn: TODAY,
+    merchant: 'Woolworths',
+    categoryName: 'Groceries',
+  };
+
+  it('leads with what was recorded', () => {
+    expect(renderRecorded(expense, 'AUD', TODAY)).toBe('Recorded $12.50 at Woolworths under Groceries.');
+  });
+
+  it('names the day only when it is not today', () => {
+    expect(renderRecorded({ ...expense, occurredOn: '2026-09-10' }, 'AUD', TODAY)).toBe(
+      'Recorded $12.50 at Woolworths under Groceries, yesterday.',
+    );
+    expect(renderRecorded({ ...expense, occurredOn: '2026-09-05' }, 'AUD', TODAY)).toBe(
+      'Recorded $12.50 at Woolworths under Groceries, on 5 Sep.',
+    );
+  });
+
+  it('says income without a category, because income never offsets a cap', () => {
+    const line = renderRecorded(
+      { direction: 'income', amountMinorUnits: 250000n, occurredOn: TODAY, merchant: null, categoryName: null },
+      'AUD',
+      TODAY,
+    );
+
+    expect(line).toBe('Recorded $2500 income.');
+    expect(line).not.toContain('uncategorised');
+  });
+
+  it('words a refund as a refund', () => {
+    expect(renderRecorded({ ...expense, direction: 'refund' }, 'AUD', TODAY)).toBe(
+      'Recorded a $12.50 refund from Woolworths to Groceries.',
+    );
+  });
+
+  it('says so when an expense has no category rather than quietly omitting it', () => {
+    expect(renderRecorded({ ...expense, categoryName: null }, 'AUD', TODAY)).toBe(
+      'Recorded $12.50 at Woolworths (uncategorised).',
+    );
+  });
+
+  it('renders a merchant named like markup literally', () => {
+    const line = renderRecorded({ ...expense, merchant: '*Woolworths*' }, 'AUD', TODAY);
+
+    expect(line).toContain('at Woolworths under');
+    expect(line).not.toContain('*');
+  });
+});
+
+describe('confirm prompt', () => {
+  const TODAY = '2026-09-11';
+
+  it('asks before recording, with buttons and a typed fallback', () => {
+    const message = renderConfirmPrompt(
+      {
+        direction: 'expense',
+        amountMinorUnits: 8950n,
+        occurredOn: TODAY,
+        merchant: 'Bunnings',
+        categoryName: 'Shopping',
+      },
+      'AUD',
+      TODAY,
+    );
+
+    expect(message.text).toContain('Should I record $89.50 at Bunnings under Shopping?');
+    // M11: every keyboard is answerable by typing — an old message scrolled out of
+    // reach still has to be answerable.
+    expect(message.text).toContain('reply yes or no');
+    expect(message.replyMarkup).toEqual({
+      inline_keyboard: [
+        [
+          { text: 'Yes', callback_data: 'pc:yes' },
+          { text: 'No', callback_data: 'pc:no' },
+        ],
+      ],
+    });
+  });
+});
+
+describe('mapping question', () => {
+  const proposal = {
+    normalizedMerchant: 'woolies',
+    displayMerchant: 'Woolworths',
+    categoryName: 'Groceries',
+    categoryId: 'cat-groceries',
+  };
+
+  it("uses M6's copy and rides on the confirmation it follows", () => {
+    const message = renderMappingQuestion(proposal, 'Recorded $12.50 at Woolworths under Groceries.');
+
+    expect(message.text).toBe(
+      'Recorded $12.50 at Woolworths under Groceries.\n\nAlways categorise Woolworths as Groceries?',
+    );
+    expect(message.replyMarkup).toEqual({
+      inline_keyboard: [
+        [
+          { text: 'Yes', callback_data: 'map:yes' },
+          { text: 'No', callback_data: 'map:no' },
+        ],
+      ],
+    });
+  });
+
+  it('stands alone when there is nothing to lead with', () => {
+    expect(renderMappingQuestion(proposal).text).toBe('Always categorise Woolworths as Groceries?');
+  });
+
+  it('strips markup from a merchant and a category name', () => {
+    const message = renderMappingQuestion({ ...proposal, displayMerchant: '[x](y)', categoryName: '<b>Food' });
+
+    expect(message.text).toBe('Always categorise x(y) as bFood?');
+  });
+});
+
+describe('yes/no callback data', () => {
+  it('round-trips both prefixes', () => {
+    expect(parseConfirmCallbackData(confirmCallbackData(true))).toBe(true);
+    expect(parseConfirmCallbackData(confirmCallbackData(false))).toBe(false);
+    expect(parseMappingCallbackData(mappingCallbackData(true))).toBe(true);
+    expect(parseMappingCallbackData(mappingCallbackData(false))).toBe(false);
+  });
+
+  it('never reads one prefix as the other, or anything else as an answer', () => {
+    expect(parseConfirmCallbackData('map:yes')).toBeNull();
+    expect(parseMappingCallbackData('pc:yes')).toBeNull();
+    expect(parseConfirmCallbackData('pc:maybe')).toBeNull();
+    expect(parseConfirmCallbackData('hist:abc')).toBeNull();
+    expect(parseMappingCallbackData('')).toBeNull();
+  });
+
+  it('fits Telegram’s 64-byte callback_data cap with room to spare', () => {
+    for (const data of ['pc:yes', 'pc:no', 'map:yes', 'map:no']) {
+      expect(new TextEncoder().encode(data).length).toBeLessThanOrEqual(64);
+    }
   });
 });
