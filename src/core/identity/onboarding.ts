@@ -10,6 +10,7 @@ import type { ReminderSelectionService } from '../allowance/reminder-selection-s
 import type { OnboardingStateStore } from './default-identity-service';
 import { RefusalError } from './errors';
 import type { IdentityService, UserSettings } from './identity-service';
+import { ONBOARDING_STEPS } from './onboarding-step';
 import type { OnboardingStep } from './onboarding-step';
 import {
   CURATED_AU_TIMEZONES,
@@ -105,6 +106,59 @@ const DONE = 'done';
 const CATEGORY_LIMIT: Record<Tier, number> = { free: 10, premium: 30 };
 const REMINDER_LIMIT: Record<Tier, number> = { free: 1, premium: 5 };
 
+/** The answerable steps, in order — `done` is a terminal state, not a question. */
+type AnswerableStep = Exclude<OnboardingStep, 'done'>;
+
+const ANSWERABLE_STEPS: readonly AnswerableStep[] = ONBOARDING_STEPS.filter(
+  (step): step is AnswerableStep => step !== 'done',
+);
+
+const TOTAL_STEPS = ANSWERABLE_STEPS.length;
+
+/**
+ * One short title per step. These are the only place a step's user-facing name is
+ * written: the "Step N of 5" heading on every prompt and the overview `/start` opens
+ * with are both derived from this table, so the two cannot drift apart.
+ */
+const STEP_TITLES: Record<AnswerableStep, string> = {
+  timezone: 'Timezone',
+  currency: 'Currency',
+  anchor_date: 'Budget start date',
+  categories: 'Categories and budgets',
+  reminders: 'Daily reminders (optional)',
+};
+
+/**
+ * Shown once, with the first question rather than as a message of its own — M11's
+ * "one reply per input step" contract. Bulleted, not numbered, deliberately: M7
+ * renders any option list longer than four as its own numbered list ("1. Sydney…"),
+ * and step 1 always hits that path, so a numbered overview directly above it would
+ * read as one broken list rather than two separate ones.
+ */
+const ONBOARDING_OVERVIEW = [
+  `Welcome to Budge Bot! Setup is ${TOTAL_STEPS} quick steps:`,
+  ...ANSWERABLE_STEPS.map((step) => `• ${STEP_TITLES[step]}`),
+].join('\n');
+
+/** `Step 3 of 5 — Budget start date`: where the user is, in every prompt they see. */
+function stepHeading(step: AnswerableStep): string {
+  return `Step ${ANSWERABLE_STEPS.indexOf(step) + 1} of ${TOTAL_STEPS} — ${STEP_TITLES[step]}`;
+}
+
+/**
+ * Every prompt goes out through here, so no step can accidentally ship unheaded — a
+ * user reading one message mid-flow can always tell it is onboarding, and how far
+ * along it is. The summary and completion replies are not prompts and carry no
+ * heading, because they are not steps.
+ */
+function stepPrompt(
+  step: AnswerableStep,
+  text: string,
+  options: readonly OnboardingOption[],
+): OnboardingPrompt {
+  return { step, text: `${stepHeading(step)}\n${text}`, options };
+}
+
 export class OnboardingService {
   private readonly parseAmount: NonNullable<OnboardingDeps['parseAmount']>;
   private readonly formatAmount: NonNullable<OnboardingDeps['formatAmount']>;
@@ -119,7 +173,11 @@ export class OnboardingService {
     const step = await this.deps.identity.getOnboardingStep(userId);
     if (step === 'done') return this.summaryReply(userId, 'summary');
     if (step === 'categories') await this.ensureStarterCategory(userId);
-    return { kind: 'prompt', prompt: await this.promptFor(userId, step) };
+    const prompt = await this.promptFor(userId, step);
+    // The what-you're-in-for list belongs at the actual beginning. A `/start` that
+    // resumes at step 4 is not the beginning, and the heading already says so.
+    if (step !== 'timezone') return { kind: 'prompt', prompt };
+    return { kind: 'prompt', prompt: { ...prompt, text: `${ONBOARDING_OVERVIEW}\n\n${prompt.text}` } };
   }
 
   /** Free text or a button press while onboarding (or a stray one afterwards). */
@@ -170,22 +228,21 @@ export class OnboardingService {
     if (matches.length === 0) {
       return {
         kind: 'prompt',
-        prompt: {
-          step: 'timezone',
-          text:
-            `I couldn't find a timezone matching "${escapeForPrompt(value)}". ` +
-            `Try a city name (e.g. "Auckland" or "London"), or pick one below.`,
-          options: curatedTimezoneOptions(),
-        },
+        prompt: stepPrompt(
+          'timezone',
+          `I couldn't find a timezone matching "${escapeForPrompt(value)}". ` +
+            `Try another city (e.g. "Auckland"), or pick one below.`,
+          curatedTimezoneOptions(),
+        ),
       };
     }
     return {
       kind: 'prompt',
-      prompt: {
-        step: 'timezone',
-        text: `Did you mean one of these, or search again?`,
-        options: matches.map((zone) => ({ label: zone, value: zone })),
-      },
+      prompt: stepPrompt(
+        'timezone',
+        'Did you mean one of these, or search again?',
+        matches.map((zone) => ({ label: zone, value: zone })),
+      ),
     };
   }
 
@@ -335,21 +392,19 @@ export class OnboardingService {
   // ---- prompts --------------------------------------------------------------------
 
   private async promptFor(userId: UserId, step: OnboardingStep): Promise<OnboardingPrompt> {
+    if (step === 'done') throw new Error('no prompt for a finished onboarding');
     switch (step) {
       case 'timezone':
-        return {
+        return stepPrompt(
           step,
-          text:
-            "Welcome to Budge Bot! First, which timezone are you in? Type a city name to search " +
-            "(e.g. \"Auckland\"), or choose one below. This can't be changed later.",
-          options: curatedTimezoneOptions(),
-        };
+          'Which timezone are you in? Type a city to search (e.g. "Auckland"), or pick one ' +
+            "below. This can't be changed later.",
+          curatedTimezoneOptions(),
+        );
       case 'currency':
-        return {
-          step,
-          text: 'Which currency do you budget in? Tap AUD, or send a 3-letter code (e.g. NZD).',
-          options: [{ label: 'AUD', value: 'AUD' }],
-        };
+        return stepPrompt(step, 'Which currency? Tap AUD, or send a 3-letter code (e.g. NZD).', [
+          { label: 'AUD', value: 'AUD' },
+        ]);
       case 'anchor_date': {
         const user = await this.deps.identity.requireUserRecord(userId);
         if (user.timezone === '') {
@@ -359,17 +414,15 @@ export class OnboardingService {
         const [year, month] = today.split('-') as [string, string, string];
         const firstOfThisMonth = `${year}-${month}-01`;
         const firstOfNextMonth = addOneMonth(year, month);
-        return {
+        return stepPrompt(
           step,
-          text:
-            'When does your monthly budget start? Your budget renews on this day every month. ' +
-            'Tap an option or send a date as YYYY-MM-DD.',
-          options: [
+          'Your budget renews on this day each month. Tap an option, or send a date as YYYY-MM-DD.',
+          [
             { label: `Today (${today})`, value: today },
             { label: `1st of this month (${firstOfThisMonth})`, value: firstOfThisMonth },
             { label: `1st of next month (${firstOfNextMonth})`, value: firstOfNextMonth },
           ],
-        };
+        );
       }
       case 'categories': {
         const [settings, tier, lines] = await Promise.all([
@@ -379,20 +432,18 @@ export class OnboardingService {
         ]);
         const anchorNote =
           settings.periodAnchorDate && Number(settings.periodAnchorDate.slice(8, 10)) > 28
-            ? ' (Months are different lengths, so your cycle will start on the 28th.)'
+            ? ' (Months vary in length, so your cycle starts on the 28th.)'
             : '';
-        return {
+        return stepPrompt(
           step,
-          text:
-            `Your budget starts on ${settings.periodAnchorDate ?? '?'} and renews monthly.${anchorNote}\n\n` +
-            `Now your categories — I've started you off with ${STARTER_CATEGORY}:\n${lines.join('\n')}\n\n` +
-            `Add one by sending its name with an optional monthly cap in ${settings.currencyCode}, ` +
-            `e.g. "Groceries 500" or just "Fun". Send "${STARTER_CATEGORY} 600" to cap ${STARTER_CATEGORY}, ` +
-            `"rename ${STARTER_CATEGORY} to Groceries" to rename it, or "remove ${STARTER_CATEGORY}" to drop it. ` +
-            `You can have up to ${CATEGORY_LIMIT[tier]} categories. At least one category must have a monthly budget ` +
-            `before you tap Done.`,
-          options: [{ label: 'Done', value: DONE }],
-        };
+          `Budget cycle: monthly from ${settings.periodAnchorDate ?? '?'}.${anchorNote}\n\n` +
+            `Your categories — I've added ${STARTER_CATEGORY} to start:\n${lines.join('\n')}\n\n` +
+            `Add one by sending a name plus an optional monthly cap in ${settings.currencyCode}, ` +
+            `e.g. "Groceries 500" or just "Fun". Also: "${STARTER_CATEGORY} 600" to cap it, ` +
+            `"rename ${STARTER_CATEGORY} to Groceries", "remove ${STARTER_CATEGORY}". ` +
+            `You can have up to ${CATEGORY_LIMIT[tier]} categories; at least one needs a monthly budget before Done.`,
+          [{ label: 'Done', value: DONE }],
+        );
       }
       case 'reminders': {
         const [tier, categories, enabled] = await Promise.all([
@@ -405,20 +456,14 @@ export class OnboardingService {
         const chosen = categories.filter((c) => enabled.includes(c.id)).map((c) => c.name);
         const intro =
           chosen.length === 0
-            ? `Last step: optionally choose a category for a daily 07:00 reminder, or send Done to skip. ` +
+            ? `Pick a category for a daily 07:00 reminder, or send Done to skip. ` +
               (limit === 1 ? 'On the free plan you can pick up to 1.' : `You can pick up to ${limit}.`)
             : `Reminder on: ${chosen.join(', ')}. Pick another (up to ${limit}), or send Done.`;
-        return {
-          step,
-          text: intro,
-          options: [
-            ...remaining.map((c) => ({ label: c.name, value: c.id })),
-            { label: 'Done', value: DONE },
-          ],
-        };
+        return stepPrompt(step, intro, [
+          ...remaining.map((c) => ({ label: c.name, value: c.id })),
+          { label: 'Done', value: DONE },
+        ]);
       }
-      case 'done':
-        throw new Error('no prompt for a finished onboarding');
     }
   }
 
