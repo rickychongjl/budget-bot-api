@@ -14,6 +14,7 @@ import type { ParseEventRepository, ParseEventCorrectionHook, ParseEventInput } 
 import type {
   CategoryRef,
   ClarifyReason,
+  ExtractedAmount,
   MappingProposal,
   MechanicalCandidate,
   MerchantMappingSource,
@@ -137,6 +138,15 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
    * contains a decimal comma, appending a day to a message with an impossible date
    * still contains the impossible date, and both would ask the same question forever.
    * Which reasons those are is a fact about the parser, so it lives here.
+   *
+   * The reason alone is not the whole rule, though. `model_asked` and `low_confidence`
+   * cover every question the *model* invents, whatever it happens to be about — and
+   * one of the things it asks about is an amount the message already stated ("is that
+   * one coffee for $5, or two $5 coffees?"). Appending an answer that restates that
+   * amount accumulates a second amount into the text, and the next round's mechanical
+   * guard refuses it as two transactions. So the merge also asks the extractors a
+   * question only they can answer: does the answer state money of its own? See
+   * `mergeClarificationAnswer`.
    */
   async answerClarification(
     context: UserParseContext,
@@ -144,7 +154,8 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
     reason: ClarifyReason,
     answer: string,
   ): Promise<ParseOutcome> {
-    return this.parse(mergeClarificationAnswer(original, reason, answer), context);
+    const restates = !REPLACING_REASONS.has(reason) && this.answerRestatesAmount(original, answer, context);
+    return this.parse(mergeClarificationAnswer(original, reason, answer, restates), context);
   }
 
   /**
@@ -194,6 +205,33 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
   /** M3's `correct()` calls this — flips `parse_event.was_corrected` (M9). */
   onTransactionCorrected(parseEventId: Id): Promise<void> {
     return this.parseEvents.markCorrected(parseEventId);
+  }
+
+  /**
+   * Evidence for the restatement half of the merge rule, gathered where the
+   * extractors live rather than guessed from the text by the pure merge function.
+   *
+   * Both halves matter. The question must have been asked about a message that
+   * **already carried an amount** — otherwise the answer is the missing amount and
+   * belongs alongside the original ("woolies" + "12.50"), which is `no_amount`'s
+   * whole shape. And the answer must state money the extractors are sure of: either
+   * unambiguously (`$5`, `5 dollars`, `4.50`), or the same number the original
+   * already stated, which is a restatement by definition.
+   *
+   * A bare number that is *not* one of those is left to append, because a bare number
+   * is exactly the token the model could not tell from a quantity in the first place:
+   * "2" answering "one coffee or two?" is a count, and "Cafe 63" is a category name.
+   * Neither may quietly become the transaction's amount by standing alone.
+   */
+  private answerRestatesAmount(original: string, answer: string, context: UserParseContext): boolean {
+    const today = localDateAt(this.clock.now(), context.timezone);
+    const amountsIn = (text: string): MechanicalCandidate['amounts'] =>
+      this.mechanicalParser.parse(this.normalizer.normalize(text), today).amounts;
+    const stated = amountsIn(original);
+    if (stated.length === 0) return false;
+    return amountsIn(answer).some(
+      (amount) => amount.explicit || stated.some((s) => sameDecimalText(s.decimal, amount.decimal)),
+    );
   }
 
   // --- internals used by ParseRun --------------------------------------------
@@ -270,24 +308,44 @@ const REPLACING_REASONS: ReadonlySet<ClarifyReason> = new Set<ClarifyReason>([
  * How a clarification answer becomes the text to parse. Pure, and exported so the
  * rule is testable and quotable on its own rather than inferred from a transcript.
  *
+ * `answerRestatesAmount` is the second half of the rule, and it is a parameter rather
+ * than something computed here because the evidence for it belongs to the mechanical
+ * extractors (`TransactionParsingPipeline.answerRestatesAmount`), not to a string
+ * function. It means: the message we asked about already carried an amount, and the
+ * answer states money of its own that the extractors are sure of — unambiguously
+ * (`$5`, `5 dollars`, `4.50`) or as the same number already stated. That is a user
+ * restating or correcting **the same** money, never a second transaction — so the
+ * answer supersedes, exactly as a replacing reason does.
+ *
+ * Why that case needs saying at all: `model_asked` and `low_confidence` are not
+ * topics, they are "the model asked something". One of the things it asks is to
+ * disambiguate an amount that is already in the message ("one coffee for $5, or two
+ * $5 coffees?"). Append the answer to that and the text now carries the same $5
+ * twice; the extractors cannot tell a restatement from two purchases, so the next
+ * round's `hasMultipleAmounts` guard refuses a message the user never wrote — and
+ * each further answer makes it worse. With this rule the transcript can never
+ * accumulate a second stated amount, however many rounds the conversation takes.
+ *
  * Known cost of the replacing branch, accepted rather than hidden: a user who answers
  * "the 30th" to "which day was it?" has dropped the merchant and amount along with
- * the bad date, and will be asked for them next. Each question converges — nothing
- * loops — but it can take two round trips. Reconstructing the good half of the
- * original would mean re-running the mechanical parse and trusting its residual
+ * the bad date, and will be asked for them next. The restatement branch can cost the
+ * same — answer "$5" and the "coffee" goes with it. Each question converges —
+ * nothing loops — but it can take two round trips. Reconstructing the good half of
+ * the original would mean re-running the mechanical parse and trusting its residual
  * description, which is exactly what the decimal-comma case shows cannot be trusted.
  */
 export function mergeClarificationAnswer(
   original: string,
   reason: ClarifyReason,
   answer: string,
+  answerRestatesAmount = false,
 ): string {
   const trimmedAnswer = answer.trim();
   const trimmedOriginal = original.trim();
   // An empty answer is not an answer; re-parsing the original asks again, which is
   // the honest outcome and costs no model call the first guard would not have cost.
   if (trimmedAnswer.length === 0) return trimmedOriginal;
-  if (REPLACING_REASONS.has(reason)) return trimmedAnswer;
+  if (REPLACING_REASONS.has(reason) || answerRestatesAmount) return trimmedAnswer;
   if (trimmedOriginal.length === 0) return trimmedAnswer;
   return `${trimmedOriginal} ${trimmedAnswer}`;
 }
@@ -377,17 +435,23 @@ class ParseRun {
     }
     this.usage = result.usage ?? null;
 
-    if (result.needsClarification) {
+    // The rules, not the model, decide whether a bare number is the amount.
+    const settled = result.needsClarification ? this.settledAmountDespiteModelDoubt(result) : null;
+    if (result.needsClarification && settled === null) {
       return this.clarify('llm', 'model_asked', result.clarificationQuestion ?? 'Can you tell me the amount, what it was for, and which category?');
     }
-    if (result.confidence < this.pipeline.deps.policy.confirmThreshold) {
+    // A settled amount also outranks low confidence: asking "what was the amount?"
+    // about a number the rules already read is the same question by another name.
+    if (settled === null && result.confidence < this.pipeline.deps.policy.confirmThreshold) {
       return this.clarify('llm', 'low_confidence', result.clarificationQuestion ?? 'I\'m not sure I got that — what was the amount and category?');
     }
 
     const merchantDisplay = result.merchant?.trim() || null;
     const fields: CandidateFields = {
       direction: result.intent,
-      amountDecimal: result.amount === null ? null : decimalText(result.amount),
+      // The model may have withheld the amount precisely because it read the bare
+      // number as a quantity; the settled amount stands in when it did.
+      amountDecimal: result.amount !== null ? decimalText(result.amount) : settled?.decimal ?? null,
       currencyCode: result.currency,
       transactionDate: result.transactionDate,
       categoryName: result.category,
@@ -406,7 +470,9 @@ class ParseRun {
     if (!validation.ok) return this.clarify('llm', validation.reason, validation.question);
 
     const proposal = this.mappingProposal(validation.category, merchantDisplay);
-    if (result.confidence < this.pipeline.deps.policy.recordThreshold) {
+    // The model did flag doubt, so this never records silently — it asks the user to
+    // confirm the candidate (amount included), which is not the forbidden question.
+    if (settled !== null || result.confidence < this.pipeline.deps.policy.recordThreshold) {
       const parseEventId = await this.logEvent('llm', false);
       return {
         kind: 'confirm',
@@ -425,6 +491,31 @@ class ParseRun {
 
   // ---------------------------------------------------------------------------
 
+  /**
+   * Product decision, 13 Sep 2026: a single bare number in a message is always the
+   * transaction amount — "coffee 5", "5 coffee" and "$5 coffee" are all $5 — and the
+   * bot never asks whether a number is a quantity or a price.
+   *
+   * The rules already settle that before the model is called: `hasExactlyOneAmount`
+   * goes false the moment an explicit multiplier appears ("2 x 5", "x3", "each",
+   * "apiece", "per person"), so a genuine multi-item message clarified mechanically
+   * and never reached this route. Where the rules HAVE settled on one amount, the
+   * model may not reopen it — the instructions tell it not to, and this is what makes
+   * that a guarantee rather than a hope.
+   *
+   * A model question is still relayed whenever something it could legitimately be
+   * unsure about is missing: no settled amount, money-in (income vs refund is a
+   * documented must-ask — M6 "Clarification policy"), or no category to work with.
+   * When none of those hold, the only thing left to doubt is the amount, so the parse
+   * continues on the settled amount — as a `confirm`, never a silent record.
+   */
+  private settledAmountDespiteModelDoubt(result: LlmParseResult): ExtractedAmount | null {
+    if (!this.candidate.hasExactlyOneAmount) return null;
+    if (result.intent !== 'expense') return null;
+    if ((result.category ?? '').trim().length === 0) return null;
+    return this.candidate.amounts[0] ?? null;
+  }
+
   private async validateAndRecord(route: ParseRoute, fields: CandidateFields): Promise<ParseOutcome> {
     const validation: ValidationResult = this.pipeline.deps.validator.validate({
       fields,
@@ -441,7 +532,9 @@ class ParseRun {
 
   private async clarify(route: ParseRoute, reason: ClarifyReason, question: string): Promise<ParseOutcome> {
     const parseEventId = await this.logEvent(route, true);
-    return { kind: 'clarify', route, parseEventId, reason, question };
+    // `parsedText` is what M6 actually parsed — the merged text on a second round —
+    // so M7 stores that rather than re-deriving the merge rule at the call site.
+    return { kind: 'clarify', route, parseEventId, reason, question, parsedText: this.candidate.normalized.original };
   }
 
   private logEvent(route: ParseRoute, neededClarification: boolean): Promise<Id> {
@@ -483,6 +576,15 @@ class ParseRun {
     if (isMultiCategoryMerchant(key) || isMultiCategoryMerchant(merchantDisplay)) return null;
     return { normalizedMerchant: key, displayMerchant: merchantDisplay, categoryId: category.id, categoryName: category.name };
   }
+}
+
+/**
+ * Same money, written two ways ("5" and "5.00"). Text only — no float, and no
+ * currency needed, since both strings come from the same extractors.
+ */
+function sameDecimalText(a: string, b: string): boolean {
+  const trim = (d: string): string => (d.includes('.') ? d.replace(/0+$/, '').replace(/\.$/, '') : d);
+  return trim(a) === trim(b);
 }
 
 /** A JSON number from the model → decimal text, without float formatting surprises. */

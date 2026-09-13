@@ -45,14 +45,14 @@ export const INSTRUCTIONS = [
   'You extract ONE personal-finance transaction from a short chat message written by someone in Australia.',
   'Return only the structured fields. Never add prose.',
   'Rules:',
-  '- amount: the single monetary amount as a plain number (no symbols). If there is no amount, or more than one distinct transaction amount, set amount to null and needs_clarification to true.',
+  '- amount: the single monetary amount as a plain number (no symbols). A number with no currency symbol is still the amount — "coffee 5", "5 coffee" and "$5 coffee" all mean 5. Never read a lone number as a quantity of items, and never ask whether a number is a quantity or a price; only an explicit multiplier ("2 x 5", "3 each", "4 apiece", "per person") states a quantity. If there is no amount at all, or more than one distinct transaction amount, set amount to null and needs_clarification to true.',
   '- currency: the ISO 4217 code if the message states one (e.g. USD, NZD); otherwise the provided default currency.',
   '- merchant: the shop, service, or counterparty as written, tidied for capitalisation. null if none.',
   '- category: EXACTLY one of the provided category names, or null if none clearly fits. Never invent a category.',
   '- transaction_date: an ISO YYYY-MM-DD date ONLY if the message contains an explicit calendar date. For relative expressions (today, yesterday, last Friday) or no date, return null — you do not know what today is.',
   '- intent: expense (money out), income (money in that is not tied to an earlier expense, e.g. salary), refund (money back for an earlier expense). If money-in is ambiguous between income and refund, set needs_clarification to true.',
   '- confidence: 0 to 1, your honest confidence that amount, intent and category are all right.',
-  '- needs_clarification: true when the amount, intent, or category cannot be determined without guessing, when the message describes several transactions, or when it is a correction/deletion of a previous entry rather than a new one.',
+  '- needs_clarification: true when the intent or category cannot be determined without guessing, when the message describes several transactions, or when it is a correction/deletion of a previous entry rather than a new one. A message carrying one number is never unclear about the amount, so that alone is never a reason to ask.',
   '- clarification_question: one short, specific question in plain Australian English when needs_clarification is true; otherwise null.',
 ].join('\n');
 

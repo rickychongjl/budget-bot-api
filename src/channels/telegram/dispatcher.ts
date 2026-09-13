@@ -47,7 +47,8 @@ type RoutableEvent = Exclude<TelegramEvent, { kind: 'unsupported' }>;
  *
  *   1. Group/channel chat        → private-chat instruction, never account data
  *   2. Resolve the user (M2)     → no account: only `requiresAccount: false` commands
- *   3. Admit the message (M8)    → except the admission-exempt commands
+ *   3. Admit the message (M8)    → skipped entirely for the admission-exempt commands;
+ *                                  the daily cap is waived for every other command
  *   4. Callback / payment events → routed explicitly, before the media fallback
  *   5. Non-text message          → "text only"
  *   6. A known slash command     → the router, *even if a prompt is open*
@@ -244,15 +245,18 @@ export class TelegramDispatcher {
     }
 
     // 3. Admission (M8), the first gate after resolution — except for the management
-    //    commands, which must stay reachable at the cap.
+    //    commands, which skip it outright. Every other command still passes through,
+    //    but without the daily cap (see `admit`).
     if (command === null || !command.exemptFromAdmission) {
       // M8's admission is a multi-query transaction — the second-largest block of
-      // database time a plain message pays for, after the parse itself.
+      // database time a plain message pays for, after the parse itself. The stage is
+      // timed either way: `skipDailyCap` changes the *outcome*, not the wall-clock
+      // cost of the transaction, and a waived cap still pays for dedupe and fair use.
       const refusal = await timed(
         this.deps.logger,
         this.deps.clock,
         'telegram.dispatch.admitted',
-        () => this.admit(resolved, event.updateId, now),
+        () => this.admit(resolved, event.updateId, now, command !== null),
         { updateId: event.updateId },
       );
       if (refusal !== undefined) return refusal;
@@ -322,17 +326,33 @@ export class TelegramDispatcher {
    * Returns the refusal to send, or `undefined` to carry on. A `duplicate` returns a
    * null message — the original delivery is already being answered, and answering
    * again would be the double-reply M8's dedupe exists to prevent.
+   *
+   * `isCommand` is "the text parsed as a slash command the router recognises" — not
+   * "the handler is exempt". An exempt handler never reaches here at all.
    */
   private async admit(
     resolved: ResolvedUser,
     updateId: string,
     now: Instant,
+    isCommand: boolean,
   ): Promise<OutboundMessage | null | undefined> {
     const result = await this.deps.entitlements.admitMessage(resolved.userId, updateId, now, {
       // Ricky's ruling, 11 Sep 2026: the daily cap is a product limit on a working
       // account, waived until sign-up finishes. Fair use is abuse protection and still
       // applies here — `skipDailyCap` cannot switch it off.
-      skipDailyCap: !resolved.onboarded,
+      //
+      // Extended by Ricky, 13 Sep 2026, on the same reasoning: the cap is a limit on
+      // *using the product* — logging expenses in free text — not a toll on running the
+      // account, so **every recognised command is waived too**, not just the three
+      // `exemptFromAdmission` ones. A Free user who has spent their five messages could
+      // previously not reach `/budget`, `/categories` or `/delete` until local midnight,
+      // which meant the cap locked them out of fixing the very entries that filled it.
+      // The waiver is still the daily half only: a command is admitted through fair use
+      // like anything else, and can still be refused `FAIR_USE_LIMIT`.
+      //
+      // An *unrecognised* `/whatever` is not a command, and counts — otherwise a leading
+      // slash would be a free pass past the cap.
+      skipDailyCap: !resolved.onboarded || isCommand,
     });
 
     if (result.outcome === 'refused') return renderRefusal(result.code, result.message);

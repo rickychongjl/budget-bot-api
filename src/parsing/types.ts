@@ -160,4 +160,15 @@ export type ParseOutcome =
       reason: ClarifyReason;
       /** Suggested question text; M7 may rephrase but must not answer it. */
       question: string;
+      /**
+       * The exact text M6 parsed to reach this question — the raw message for a first
+       * question, and the merged text for a second one. Hand it straight back as
+       * `answerClarification`'s `original` when the user answers.
+       *
+       * It is M6's own output rather than something the channel recomputes, because
+       * how an answer combines with the question it answers is M6's policy
+       * (`mergeClarificationAnswer`) and a caller re-deriving it can drift from what
+       * was actually parsed.
+       */
+      parsedText: string;
     };
