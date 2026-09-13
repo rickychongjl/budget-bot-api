@@ -134,7 +134,7 @@ describe('TelegramApiClient — the token never escapes', () => {
     expect(JSON.stringify(api.only.payload)).not.toContain(TOKEN);
   });
 
-  it('reduces a fetch rejection to its error name, because the message can quote the URL', async () => {
+  it('logs a fetch rejection with the token scrubbed, not the message dropped entirely', async () => {
     const leaky = new TypeError(`request to https://api.telegram.org/bot${TOKEN}/sendMessage failed`);
     const { logger, sender } = harness(leaky);
 
@@ -142,7 +142,12 @@ describe('TelegramApiClient — the token never escapes', () => {
 
     expect(result).toEqual({ status: 'retryable' });
     expect(JSON.stringify(logger.lines)).not.toContain(TOKEN);
-    expect(logger.lines.map((l) => l.event)).toContain('telegram.call.network_error');
+
+    const line = logger.lines.find((l) => l.event === 'telegram.call.network_error');
+    expect(line?.fields.error).toBe('TypeError');
+    // The rest of the message survives — only the token itself is scrubbed — so a
+    // real failure reason (bad host, TLS, a malformed URL) stays diagnosable.
+    expect(line?.fields.message).toBe('request to https://api.telegram.org/bot[redacted]/sendMessage failed');
   });
 
   it('does not throw on any failure — every outcome is classifiable', async () => {
