@@ -167,6 +167,100 @@ describe('happy path — 5 steps', () => {
   });
 });
 
+describe('knowing where you are in the flow', () => {
+  const STEP_INDICATOR = /Step \d+ of 5/;
+
+  it('opens `/start` with the whole list of steps, in the first message', async () => {
+    const userId = await newUser();
+    const p = prompt(await onboarding.start(userId));
+
+    expect(p.text).toContain('Welcome to Budge Bot!');
+    for (const title of [
+      'Timezone',
+      'Currency',
+      'Budget start date',
+      'Categories and budgets',
+      'Daily reminders (optional)',
+    ]) {
+      expect(p.text).toContain(`• ${title}`);
+    }
+    // One reply per input step (M11): the overview rides on the first question, it is
+    // not a second message — so the step-1 heading follows it in the same text.
+    expect(p.text.indexOf('Welcome to Budge Bot!')).toBeLessThan(p.text.indexOf('Step 1 of 5'));
+    expect(p.step).toBe('timezone');
+
+    // M7 renders step 1's seven zones as its own "1. Sydney / 2. Melbourne" list
+    // (more than MAX_INLINE_OPTIONS). Nothing in the overview may start a line with
+    // its own number, or the two lists read as one broken one.
+    expect(p.text).not.toMatch(/^\s*\d+[.)]/m);
+  });
+
+  it('numbers every step, so a single message mid-flow is recognisably onboarding', async () => {
+    const userId = await newUser();
+
+    expect(prompt(await onboarding.start(userId)).text).toContain('Step 1 of 5 — Timezone');
+
+    const currency = prompt(await onboarding.answer(userId, { value: 'Australia/Sydney', step: 'timezone' }));
+    expect(currency.text).toContain('Step 2 of 5 — Currency');
+
+    const anchor = prompt(await onboarding.answer(userId, { value: 'AUD', step: 'currency' }));
+    expect(anchor.text).toContain('Step 3 of 5 — Budget start date');
+
+    const categories = prompt(await onboarding.answer(userId, { value: '2026-09-01', step: 'anchor_date' }));
+    expect(categories.text).toContain('Step 4 of 5 — Categories and budgets');
+
+    await onboarding.answer(userId, { value: 'Food 500' });
+    const reminders = prompt(await onboarding.answer(userId, { value: 'done', step: 'categories' }));
+    expect(reminders.text).toContain('Step 5 of 5 — Daily reminders (optional)');
+  });
+
+  it('numbers the prompts a refusal and a timezone search come back with, too', async () => {
+    const userId = await newUser();
+    await onboarding.start(userId);
+
+    const noMatch = prompt(await onboarding.answer(userId, { value: 'zzzz' }));
+    expect(noMatch.text).toContain('Step 1 of 5 — Timezone');
+
+    const didYouMean = prompt(await onboarding.answer(userId, { value: 'auckland' }));
+    expect(didYouMean.text).toContain('Step 1 of 5 — Timezone');
+
+    await onboarding.answer(userId, { value: 'Australia/Sydney', step: 'timezone' });
+    const refused = await onboarding.answer(userId, { value: 'XXX' });
+    expect(refused.kind).toBe('refused');
+    if (refused.kind !== 'refused') return;
+    expect(refused.prompt?.text).toContain('Step 2 of 5 — Currency');
+  });
+
+  it('shows the overview at the start only — not on a resumed or re-prompted step 1', async () => {
+    const userId = await newUser();
+    await onboarding.start(userId);
+
+    // A failed search is still step 1, but it is not the beginning any more.
+    expect(prompt(await onboarding.answer(userId, { value: 'zzzz' })).text).not.toContain('Welcome to Budge Bot!');
+
+    await throughStep3(userId);
+    expect(prompt(await onboarding.start(userId)).text).not.toContain('Welcome to Budge Bot!');
+  });
+
+  it('carries no step number into the completion or the returning-user summary', async () => {
+    const userId = await newUser();
+    await throughStep3(userId);
+    await onboarding.answer(userId, { value: 'Food 500' });
+    await onboarding.answer(userId, { value: 'done' });
+
+    const done = await onboarding.answer(userId, { value: 'done' });
+    expect(done.kind).toBe('complete');
+    if (done.kind !== 'complete') return;
+    // Finishing is not a sixth step, and neither is a settings summary.
+    expect(done.text).not.toMatch(STEP_INDICATOR);
+
+    const again = await onboarding.start(userId);
+    expect(again.kind).toBe('summary');
+    if (again.kind !== 'summary') return;
+    expect(again.text).not.toMatch(STEP_INDICATOR);
+  });
+});
+
 describe('step 1 — timezone search', () => {
   it('searches IANA for anything off the curated list and accepts a tapped result', async () => {
     const userId = await newUser();

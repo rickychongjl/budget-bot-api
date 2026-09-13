@@ -29,6 +29,36 @@ describe('MechanicalTransactionParser — amounts', () => {
     expect(c.hasExactlyOneAmount).toBe(true);
   });
 
+  /**
+   * Product decision, 13 Sep 2026: a single bare number is always the amount, with or
+   * without a `$`. "5 coffee" used to extract no amount at all (the bare 5 was demoted
+   * as a count of coffees), which is what sent it to the model and let it come back
+   * asking whether 5 was a quantity or a price.
+   */
+  it('reads a single bare number as the amount, wherever it sits and with or without a $', () => {
+    for (const text of ['coffee 5', '5 coffee', '$5 coffee']) {
+      const c = parse(text);
+      expect(c.amounts.map((a) => a.decimal), text).toEqual(['5']);
+      expect(c.hasExactlyOneAmount, text).toBe(true);
+      expect(c.hasMultipleAmounts, text).toBe(false);
+      expect(c.normalizedDescription, text).toBe('coffee');
+    }
+  });
+
+  it('still gives a counted item away to any other number in the message', () => {
+    expect(parse('1 coffee 5').amounts.map((a) => a.decimal)).toEqual(['5']);
+    expect(parse('1 ticket 25').amounts.map((a) => a.decimal)).toEqual(['25']);
+    expect(parse('2 coffees $9').amounts.map((a) => a.decimal)).toEqual(['9']);
+  });
+
+  it('keeps explicit multiplier phrasing a multi-item case, never a flat price', () => {
+    for (const text of ['2 coffees at 4.50 each', '3 drinks apiece $4', '3 x $12 tickets', 'coffee 4.50 x2', '2 coffees x 5']) {
+      const c = parse(text);
+      expect(c.hasMultipleAmounts, text).toBe(true);
+      expect(c.hasExactlyOneAmount, text).toBe(false);
+    }
+  });
+
   it('ignores digits glued to words and known unit suffixes', () => {
     expect(parse('7-eleven 50').amounts.map((a) => a.decimal)).toEqual(['50']);
     expect(parse('h2o 3').amounts.map((a) => a.decimal)).toEqual(['3']);
