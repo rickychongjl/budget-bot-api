@@ -87,9 +87,15 @@ export interface CommandHandler {
   /** One line, shown in the `/` menu and by `/help`. Telegram caps this at 256 chars. */
   description: string;
   /**
-   * Skips `admitMessage` entirely. M11: the management route "must also work when
-   * ordinary product messages are capped", and `/help` has "no onboarding
-   * prerequisite". These cost no quota and stay reachable at the cap.
+   * Skips `admitMessage` **entirely** — fair use included. M11: the management route
+   * "must also work when ordinary product messages are capped", and `/help` has "no
+   * onboarding prerequisite".
+   *
+   * Not the same thing as being reachable at the daily cap: since Ricky's 13 Sep 2026
+   * ruling *every* recognised command is waived from the Free daily cap by the
+   * dispatcher (`skipDailyCap`), so this flag now means only "does not go through the
+   * rate limiter at all". Keep it to the handful M11 names — a command that is exempt
+   * here is one an abusive client can call without limit.
    */
   exemptFromAdmission: boolean;
   /** False only for commands answerable before the user has an account. */

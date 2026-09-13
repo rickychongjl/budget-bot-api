@@ -44,7 +44,7 @@ The reminder limit counts categories *with reminders enabled*, not categories wi
 
 ## Resolved policy (build all of this — it's settled, not draft)
 - **Timezone is immutable**, enforced at M2's write path; this module just relies on it for quota-reset timing.
-- **Daily quota counts inbound user messages** (including expense-logging and command inputs). Bot replies, scheduled reminders, and allowance text in confirmations do **not** count.
+- **Daily quota counts inbound user messages.** Bot replies, scheduled reminders, and allowance text in confirmations do **not** count. **Revised twice since (both Ricky's calls, both implemented as `admitMessage`'s `skipDailyCap`, which waives the *daily* half only and never fair use):** 11 Sep 2026, messages sent before onboarding completes do not count; **13 Sep 2026, no recognised slash command counts** — the cap limits *using* the product (free-text expense logging), not running the account, and a capped Free user locked out of `/budget`, `/categories` or `/delete` cannot fix the entries that filled the day. An *unrecognised* `/whatever` still counts, so a leading slash is not a free pass. Callback taps still count (M7 stage 4D recorded that cost deliberately).
 - **Failed user sends consume no quota.** Count one successfully admitted message once, by M7's stable message identity — Telegram redelivery is the same message, not a second one.
 - **Fair use**: both tiers, 20 admitted messages per rolling 2 hours, independent of the Free daily cap.
 - **Category capacity — updated 5 Sep (M3 round 4), supersedes the original page:** capacity counts **non-archived** categories only. Archiving a category is itself gated by M3 (only allowed if it has no transaction in the current budget cycle) — once archived, it frees its slot immediately regardless of earlier-cycle history; reactivating it re-consumes a slot, subject to the tier limit. See M3's plan, "Category removal and the capacity loophole," for the full mechanism — this module just compares the count M3 supplies against the tier limit.
@@ -55,7 +55,7 @@ The reminder limit counts categories *with reminders enabled*, not categories wi
 - **Daily reset**: midnight in the user's immutable IANA timezone.
 - **Recovery messaging**: fair-use refusal: *"You've reached 20 messages in 2 hours. Try again in {minutes} minutes."* — computed from the earliest counted message's expiry, not a restarted full wait. Free daily refusal: *"You've used your 5 messages today. Your limit resets at {local reset time}."*
 - **Combined limits**: if both are exhausted, return the later eligibility time and explain both.
-- **Accounting boundary**: quota counts received user messages, not successful ledger writes — an admitted command, clarification answer, or invalid input still consumes a slot; a rejected over-limit attempt does not.
+- **Accounting boundary**: quota counts received user messages, not successful ledger writes — an admitted clarification answer or invalid input still consumes a daily slot; a rejected over-limit attempt does not. **Recognised commands are the exception since 13 Sep 2026** (above): they are recorded, so fair use sees them, but flagged `counts_toward_daily = false`.
 - **Non-message events**: bot replies, reminders, payment notifications, and Telegram redeliveries never consume quota. Callback queries are distinct events — command routing must not let button-driven actions bypass the same admission gate as typed messages.
 
 ## Public interface

@@ -53,7 +53,7 @@ M5's `escapeCategoryName` (`src/core/allowance/messages.ts:25`) **strips** marku
 | `/subscription` | "No subscription is a normal state with an upgrade option" | **Real empty state**: tier + `NO_SUBSCRIPTION` wording + pointer to `/upgrade`. Not a stub. |
 | `/paysupport` | "Support destination … remain to be configured"; "never gated by Premium or daily allowance quota" | **Real static reply** naming a support contact from a new `SUPPORT_CONTACT` Wrangler var (plain var, not a secret). Needs a value from Ricky. |
 
-**Admission-exempt commands (live M11: "the management route must also work when ordinary product messages are capped"; `/help` has "no onboarding prerequisite"):** `/help`, `/paysupport`, `/subscription` skip `admitMessage` entirely — they cost no quota and remain reachable at the cap. `/cancel` is *not* exempt (M11 doesn't list it; it's a product action). M11 flags finalising this routing as a pre-billing item; taking it now is cheap and matches both pages' intent — flagged in the build-log entry.
+**Admission-exempt commands (live M11: "the management route must also work when ordinary product messages are capped"; `/help` has "no onboarding prerequisite"):** `/help`, `/paysupport`, `/subscription` skip `admitMessage` entirely — they cost no quota and remain reachable at the cap. `/cancel` is *not* exempt (M11 doesn't list it; it's a product action). M11 flags finalising this routing as a pre-billing item; taking it now is cheap and matches both pages' intent — flagged in the build-log entry. **Superseded in part, 13 Sep 2026 (Ricky):** every *other* command still calls `admitMessage`, but with `skipDailyCap`, so no command counts toward the Free daily cap — only fair use can refuse one. This flag now means "skips the rate limiter too", not "reachable at the cap"; see M11's resolved list and the build-log entry.
 
 ---
 
@@ -126,7 +126,7 @@ Each handler in `channels/telegram/commands/<name>.ts`, calling the owning servi
 | Command | Calls | Notes |
 |---|---|---|
 | `/start` | `identity.register` → `onboarding.start(userId)` | Returning user gets `summary` kind; render `AccountSummary`. `register` runs unconditionally — idempotent by contract, and the only thing that re-activates a connection the 403 path deactivated |
-| `/today [category]` | `allowance.availableToday(userId, categoryId?)` | M5's `renderAllowanceLine` per view; counts toward quota (already does — admission runs first) |
+| `/today [category]` | `allowance.availableToday(userId, categoryId?)` | M5's `renderAllowanceLine` per view; admitted (fair use) but **no longer counts toward the daily cap** — 13 Sep 2026, see line above |
 | `/budget [category] [amount]` | `budgets.currentBudgets` / `budgets.setCap` | Amount → minor units via M3's `toMinorUnits` against `settings.currencyCode`; no partial write on bad input |
 | `/categories` | `categories.list/create/rename/archive` | **Arguments, not a keyboard** (see decision 1 below): `add` / `rename` / `archive`. Capacity and archive refusals come from M8 and M3 as thrown refusals |
 | `/settings` | `identity.getSettings` | **View only** (see decision 2 below). `updateSettings` is not on `CommandServices.identity`, so a write does not compile |

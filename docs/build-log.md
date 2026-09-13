@@ -2366,6 +2366,142 @@ Two separate things had to change, because the assumed cause was only half of it
   expects a clarification expects it for a *different* reason — several amounts, a decimal
   comma, a foreign currency, an impossible date, a correction, a missing category, or
   money-in. Nothing was relabelled and `EVAL_SET_VERSION` stays at 1.
+## Free daily cap no longer applies to any command — 2026-09-13
+
+**Authorised scope change, Ricky, 13 Sep 2026**, quoted so the reversal is traceable
+rather than inferred: *"Free users, once reached their tier limit, daily messages,
+cannot call commands. I know this was a decision, but I want us to free up all of the
+commands and not count it against the daily message limit as that hurts user
+experience."*
+
+This **reverses part of the 11 Sep 2026 ruling** recorded in M7 stage 4B's entry above.
+That ruling waived the Free daily cap only until onboarding finished; once a user was
+onboarded, every command except the three `exemptFromAdmission` ones (`/help`,
+`/subscription`, `/paysupport`) counted. A Free user who had spent their five messages
+was therefore refused `DAILY_MESSAGE_LIMIT` on `/budget`, `/categories`, `/delete`,
+`/today`, `/history`, `/stats`, `/remind`, `/settings`, `/cancel` and `/upgrade` — locked
+out of managing their own account until local midnight, including out of correcting the
+entries that used the day up. The new rule is the same reasoning applied wider: the
+daily cap is a limit on *using* the product — free-text expense logging — not a toll on
+running the account.
+
+### Built
+
+- **`channels/telegram/dispatcher.ts`** — `admit()` takes an `isCommand` flag and passes
+  `skipDailyCap: !resolved.onboarded || isCommand`. One condition on the existing M8
+  option rather than `exemptFromAdmission: true` on ten handler files: that flag skips
+  `admitMessage` *entirely*, fair use included, which is not what was asked for and
+  would hand an abusive client ten unlimited endpoints. The doc comment keeps the 11 Sep
+  reasoning and records this as its extension.
+- **`core/entitlements/entitlement-service.ts`, `default-entitlement-service.ts`** —
+  `AdmitMessageOptions.skipDailyCap` and `admitMessage`'s comments now describe both
+  callers. No signature change: the option already existed and already meant exactly
+  this. `usage_counter.counts_toward_daily` (migration 0006) carries the distinction, so
+  no migration either.
+- **`channels/telegram/command-router.ts`** — `exemptFromAdmission`'s comment now says
+  what it means *now*: not "reachable at the cap" (every command is), but "does not go
+  through the rate limiter at all", which is why the set stays at three.
+- **Docs** — M8 ("Resolved policy", "Accounting boundary"), M11 (resolved list, command
+  catalogue rows for free text and `/today`), M7's phase-4 plan (the admission-exempt
+  paragraph and the `/today` row).
+
+### Assumed
+
+- **"Recognised command" is the router's answer, not the leading slash.** `/nonsense`
+  parses as a command but resolves to no handler, so it still counts toward the day.
+  Otherwise typing a slash in front of anything would be a free pass past the cap.
+  Regression-tested.
+- **Callback taps are unchanged and still count.** A tap is not a slash command, so
+  stage 4D's recorded cost (a confirmed expense costs a Free user 2 of 5 daily messages,
+  3 with the merchant question) stands exactly as logged, and Ricky's condition for
+  accepting it — onboarding stays exempt — is still met.
+- **Fair use is untouched, deliberately.** The request was explicitly about the *daily*
+  cap. A command is still admitted through the 20-per-rolling-2h window and can still be
+  refused `FAIR_USE_LIMIT`; the rows are still written so the window sees them.
+- **The three `exemptFromAdmission` commands keep that flag.** It is now strictly
+  stronger than the new waiver rather than redundant with it, and M11 names that set for
+  its own reason (`/paysupport` must work when everything else does not).
+
+### Verification
+
+`npm test` — **748 passed / 10 skipped**, up from 743 passed / 10 skipped: 5 new cases in
+`test/unit/telegram/dispatcher.test.ts` (every previously-counted command reachable at
+the cap; a command recorded with `countsTowardDaily: false`; free text still refused at
+the cap with a command in between; a 21-command burst still refused on fair use; an
+unrecognised command still counted). The 10 skips are this environment's, not a
+regression: no `DATABASE_URL`, so the Neon-gated integration files and the live eval
+suite skip themselves.
+
+Regression discipline followed: with `|| isCommand` reverted, three of the five fail
+(`keeps every command reachable at the cap`, `records a command against fair use, but
+not against the day`, `still rate-limits a burst of commands on fair use`) and the two
+guarding against over-reach pass either way, which is what they are for.
+
+`npm run typecheck` — clean, 0 errors.
+
+`npm run test:integration` — not run; no `DATABASE_URL` in this environment. Nothing
+here touches a query, a schema or a migration — `counts_toward_daily` already exists and
+already behaves this way, and M8's integration suite covers it.
+
+### Open questions
+
+1. **Does `/today` want a cheaper answer than "free"?** It is the one waived command a
+   user might poll all day, and it now costs nothing but a fair-use slot. Fair use caps
+   it at 20 per 2h, which is almost certainly enough, but if real usage shows `/today`
+   polling it is worth deciding deliberately rather than rediscovering it as a bill.
+2. **Should a confirmation tap follow the commands?** The 13 Sep cost note says a
+   confirmed expense costs a Free user 2 of 5 daily messages. That is now the *only*
+   place a non-free-text event spends daily quota, which makes it more conspicuous than
+   it was. Left alone here because it was decided separately and this change was not
+   asked to reopen it.
+## M2 onboarding — step numbering and a shorter script — 2026-09-13
+
+Ricky's read of the live flow: a `/start` dropped the user straight into the timezone
+question with no idea how long setup was, and no individual step said it *was* a step —
+mid-flow, a prompt was indistinguishable from any other bot reply. Copy was also longer
+than it needed to be. Product change only; no contract, schema or routing change.
+
+### Built
+
+- **`Step N of 5 — <Title>` on every onboarding prompt** (`core/identity/onboarding.ts`) —
+  a new `stepPrompt()` is the single constructor for every `OnboardingPrompt` the module
+  emits, so the heading cannot be forgotten on one branch. That covers `promptFor()`'s
+  five steps *and* the two prompts step 1 builds itself (no timezone match; "did you mean").
+  Titles live in one `STEP_TITLES` table keyed by `OnboardingStep`, and the number is the
+  step's index in `ONBOARDING_STEPS` — adding or reordering a step renumbers the copy
+  automatically and fails the typecheck if a title is missing.
+- **An overview on the first message** — `start()` prepends a bulleted list of all five
+  steps when, and only when, the user is actually at step 1. Not a second message (M11's
+  "one reply per input step"), and not repeated on a `/start` that resumes at step 4 or on
+  a re-prompted step 1, where it would be noise.
+- **Tightened prompt copy throughout `promptFor()`** — every instruction the user needs to
+  answer is kept (the 3-letter currency code, `YYYY-MM-DD`, the `"Groceries 500"` cap
+  syntax, rename/remove, the tier's category limit, the "one budget before Done" rule, the
+  07:00 reminder and the per-tier reminder cap); the filler around them is gone. Step 4's
+  closing paragraph, the longest thing in the flow, drops from ~90 words to ~55. The
+  `Welcome to Budge Bot!` greeting moved out of the timezone question and into the overview.
+- **5 unit cases** (`test/unit/identity/onboarding.test.ts`) — the overview lists all five
+  steps ahead of the step-1 heading; each of the five prompts carries its own number; a
+  refusal's re-shown prompt and a timezone search result carry it too; the overview appears
+  only at the true start; and neither the completion nor the returning-user summary carries
+  a step indicator, because neither is a step.
+
+### Assumed
+
+Wording calls, all cheap to change if Ricky wants them differently:
+
+- **`Step 3 of 5 — Budget start date`**, heading on its own line above the question. Em
+  dash, not a colon, and the count is spelled out rather than `(3/5)`.
+- **The overview is bulleted, not numbered.** M7 renders any option list longer than
+  `MAX_INLINE_OPTIONS` (4) as its own numbered list, and step 1's seven zones always hit
+  that path — a numbered overview sitting directly above `1. Sydney / 2. Melbourne` would
+  read as one broken list. A regression test asserts no line of the first message starts
+  with its own number.
+- **Step titles:** Timezone / Currency / Budget start date / Categories and budgets /
+  Daily reminders (optional). "(optional)" is in the title because step 5 genuinely is.
+- **The overview shows once.** A resumed `/start` mid-flow gets only the numbered heading.
+  The alternative — repeating the list every time — was rejected as noise, given the
+  heading already says where the user is.
 
 ### Verification
 
@@ -2399,3 +2535,19 @@ pipeline cases clarify instead of recording/confirming). Restored, all pass.
    the item-count demotion absolute for *plural* items only — but that would also make
    `5 coffees` ask, which is the same shape as `5 coffee`, so it is a real trade-off, not
    an oversight.
+`npm test` — **748 passed / 10 skipped**, up from 743 passed / 10 skipped on this branch's
+base: the 5 new onboarding cases. The 10 skips are environmental, not new — 9 Postgres
+tests and the live-LLM eval, neither gated credential being present in this worktree.
+
+`npm run test:integration` — **81 passed / 9 skipped**; the 9 are the `DATABASE_URL`-gated
+Postgres cases, which **did not run** (no `DATABASE_URL` in this worktree). Nothing here
+touches the database, and no integration test asserts on prompt copy.
+
+`npm run db:generate` — not run; no schema change.
+
+### Open questions
+
+1. **Does step 4's "I've added Food to start" want to survive a removal?** It is stated as
+   history, so it still reads acceptably after the user removes Food — but the cap/rename/
+   remove examples in the same paragraph go on naming `Food` after it is gone. Pre-existing,
+   untouched here, and only worth fixing if it ever confuses anyone in practice.
