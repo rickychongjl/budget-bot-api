@@ -156,7 +156,7 @@ Category lookup by name for `/today`, `/budget`, `/stats`, `/remind`, `/categori
 
 ---
 
-## Stage 4D — Free-text path
+## Stage 4D — Free-text path — **shipped 13 Sep 2026**
 
 - Wire `createParsingPipeline({db, clock, openAiApiKey: env.OPENAI_API_KEY, ledger, allowance, logger})` (`src/infrastructure/create-parsing-pipeline.ts`) in the composition root.
 - Dispatcher step 8: build `UserParseContext` (categories, currency, timezone, today) → `pipeline.parse(text, ctx)`:
@@ -166,6 +166,16 @@ Category lookup by name for `/today`, `/budget`, `/stats`, `/remind`, `/categori
 - Step 7 (open prompt): `confirm` + yes/text-yes → `pipeline.recordConfirmed(...)`; no → clear. `clarify` + text → clear the prompt and re-`parse` with the answer appended to the original text (the pipeline has no dedicated answer method — check whether it needs one; if a clean "answer" call turns out to be needed that's an M6 contract addition, flag it, don't hack it).
 - `map:yes` callback → `pipeline.confirmMerchantMapping(...)`.
 - Every reply on this path is one message (M11 "one reply per input step").
+
+### Decisions taken during the build — Ricky, 13 Sep 2026
+
+1. **`answerClarification` is an M6 contract addition, not an M7 hack.** The sketch above ends "check whether it needs one; if a clean 'answer' call turns out to be needed that's an M6 contract addition, flag it, don't hack it." It was needed. Appending the answer to the original is wrong for half the `ClarifyReason`s: appending "4.50" to "coffee 4,50" still carries a decimal comma, appending a day to a message with an impossible date still carries the impossible date, and both re-trigger the same guard forever. `TransactionParsingPipeline.answerClarification(context, original, reason, answer)` now owns the rule — `multiple_amounts`, `invalid_amount`, `foreign_currency`, `ambiguous_date`, `invalid_date`, `correction_intent` replace; everything else appends — then runs the ordinary `parse` path, so one `parse_event` per answered attempt.
+2. **`pending_prompt.kind` gains `'mapping'` (migration 0009).** The "Always categorise X as Y?" question is asked after the entry is recorded and answered by a later update, so the `MappingProposal` has to survive the invocation. It does not fit Telegram's 64-byte `callback_data`, and M11 requires a typed fallback for every keyboard, so the button carries only yes/no and the proposal lives in the row. This is the migration stage 4C's decision 1 predicted when it chose arguments over keyboards for `/categories`.
+3. **Callback taps stay admitted messages.** Admission happens at dispatcher step 3, before the event kind is examined, so a `pc:`/`map:` press counts against M8's fair-use window and the Free daily cap. Ricky's ruling: leave it, given onboarding is already exempt from the daily cap (`skipDailyCap: !resolved.onboarded`). **Cost recorded rather than hidden: a confirmed expense costs a Free user 2 of 5 daily messages, 3 with the merchant question.**
+4. **Anything that is not yes or no supersedes a yes/no prompt** — the second expense someone types while a confirmation is open gets logged, not misread as an answer. A `clarify` is the opposite: it asked for text, so any text answers it.
+5. **The handler takes no `now`.** Found during the build: deciding "was this today?" from the dispatcher's `now` (the sender's timestamp off the update) while M6 stamps from its own `Clock` mis-words the date across a local midnight. `FreeTextHandler` has no `now` parameter; the handler holds the clock M6 and M3 stamp with.
+
+See `docs/build-log.md`, "M7 stage 4D", for what shipped and what stayed open.
 
 ---
 

@@ -1980,3 +1980,159 @@ touches M4's tables or the PGlite helper.
 
 `npx drizzle-kit generate` after the schema change — "No schema changes, nothing to
 migrate".
+
+## M7 stage 4D — The free-text path — 2026-09-13
+
+Phase 4's fourth stage, and the one the product is actually for. 4A gave the bot a
+voice, 4B gave it ears, 4C gave it commands; this is the part where you type
+"woolies 12.50" and it understands you.
+
+M6's pipeline has been finished and tested since Phase 1 and has never been called by
+anything. `pending_prompt` has existed since 4B and has never been written to. This
+stage connects both, and adds the conversation that sits between them.
+
+### Built
+
+- **`channels/telegram/free-text.ts`** — `TelegramFreeTextHandler`. Builds
+  `UserParseContext` from M2's `getSettings` and M3's non-archived category list,
+  calls M6, writes or clears `pending_prompt`, and renders. No arithmetic and no
+  policy; the one judgement it makes is reading "yes" as yes.
+- **`channels/telegram/pending-payload.ts`** — the jsonb codec. Zod schemas for the
+  three payload shapes, minor units as decimal text in both directions, and `null`
+  rather than an exception for anything that does not fully validate.
+- **`render.ts`** — `renderRecorded`, `renderConfirmPrompt`, `renderMappingQuestion`,
+  and the `pc:` / `map:` callback helpers. The confirmation leads with what was
+  recorded and puts M5's `renderAllowanceLine` on the next line, which is M7's page
+  verbatim.
+- **`TransactionParsingPipeline.answerClarification`** (M6) — see the first decision
+  below. One line added to `docs/M6-nlp-parsing-merchant-memory.md`.
+- **`pending_prompt.kind` gains `'mapping'`** — migration `0009`, with the journal tag
+  renamed to `0009_pending_prompt_mapping_kind` the way `0007` and `0008` are.
+- **The dispatcher's steps 8 and 9 are live.** `freeText` is a required dependency,
+  `FREE_TEXT_NOT_WIRED_REPLY` is gone, and `pc:` / `map:` route in `routeCallback`.
+- **`/cancel` is kind-aware.** A `mapping` question is asked *after* the entry is
+  recorded, so "Nothing was recorded" there is a plain lie about the user's own
+  ledger — the kind that sends someone to `/delete` to fix something that is not
+  broken.
+- **`src/index.ts`** wires `createParsingPipeline` and the handler. `createServices`
+  gains its first test: the composition root was otherwise only ever exercised in
+  production.
+
+### Decisions taken (Ricky, 13 Sep 2026)
+
+- **`answerClarification` is M6's, not M7's.** The stage sketch had M7 re-parsing "the
+  original text with the answer appended". That is wrong for half the reasons we ask:
+  appending "4.50" to "coffee 4,50" still contains a decimal comma, appending a day to
+  a message carrying an impossible date still contains the impossible date, and both
+  ask the same question forever. Which reasons behave which way is a fact about the
+  parser, so the rule lives with the parser. `multiple_amounts`, `invalid_amount`,
+  `foreign_currency`, `ambiguous_date`, `invalid_date` and `correction_intent` mean the
+  original text is itself the problem and the answer stands alone; everything else
+  means the original was fine but incomplete and the answer extends it. The merged text
+  runs the ordinary `parse` path, so an answered attempt writes exactly one
+  `parse_event` and passes every validation rule unchanged.
+- **A third `PendingPromptKind`, `'mapping'`, and migration 0009.** "Always categorise
+  Woolworths as Groceries?" is asked after the transaction exists and is answered by a
+  later update, so the proposal has to survive the invocation. It cannot ride in the
+  button — a `MappingProposal` is four fields against Telegram's 64-byte
+  `callback_data` — and M11 requires every keyboard to have a free-text fallback, so a
+  typed "yes" has to find the same proposal. Stage 4C recorded the two-kind constraint
+  as its reason for making `/categories` and `/remind` argument-driven; this is the
+  migration that decision predicted, taken deliberately rather than by accident.
+- **Callback taps stay admitted messages.** The dispatcher admits at step 3, before it
+  looks at the event kind, so a `pc:yes` or `map:yes` press counts against M8's
+  fair-use window and, on Free, the 5-per-day cap. Ricky's ruling: this stays as it is,
+  on the condition a user can finish onboarding before the daily cap applies — which is
+  already true (`skipDailyCap: !resolved.onboarded`, migration 0006's
+  `counts_toward_daily`). **The cost, recorded so it is not rediscovered as a bug: an
+  expense that needs confirming costs a Free user 2 of their 5 daily messages, and 3 if
+  they also answer the merchant question.** Worth revisiting only if the confirm
+  threshold turns out to fire often in real use.
+- **Anything that is not yes or no supersedes a yes/no question.** Someone who types a
+  second expense while a confirmation is open wants that expense logged, not read as an
+  answer about the first one. A `clarify` is the opposite: it asked for text, so any
+  text is its answer.
+
+### Assumed
+
+- **The day is named only when it is not today.** "Recorded $5, today" reads like a
+  receipt; a backdated entry landing on the wrong day is exactly the mistake the
+  sentence exists to let someone catch. Yesterday gets the word, anything else gets
+  "on 5 Sep".
+- **The replacing branch of `answerClarification` can cost a second round trip.**
+  Answer "the 30th" to "which day was it?" and the merchant and amount go with the bad
+  date, so the next question asks for them. Each step converges and nothing loops.
+  Reconstructing the good half of the original would mean trusting the mechanical
+  parser's residual description — and the decimal-comma case is precisely where that
+  cannot be trusted, since "4,50" survives into the residual as "4 50".
+- **The yes/no vocabulary is deliberately small** (`yes/y/yep/yeah/yup/ok/okay/sure/please do`,
+  `no/n/nope/nah/don't/dont`). Everything else supersedes, so the cost of being
+  conservative is that "yep 12.50 coffee" logs a coffee — which is what it says.
+- **The clarify payload stores the original message text**, which is new for this
+  table. Not a new class of data — the same text reaches `transaction.raw_text` the
+  moment the entry records — and it is cleared on an answer, on `/cancel`, or by a
+  superseding message. **But an abandoned prompt keeps it until the user's next
+  message, which is an M9 retention item rather than something this stage should invent
+  a policy for.**
+- **A `confirm` answered yes usually leaves a `mapping` question open, not an empty
+  table.** That is the flow working: the entry records, and the merchant offer is the
+  next thing the conversation is waiting on.
+
+### Fixed in passing
+
+- **The handler was asking Telegram what day it was.** It decided "was this today?"
+  from the dispatcher's `now`, which is the sender's timestamp off the update, while M6
+  stamps the transaction from its own injected `Clock`. In the unit harness the two are
+  a day apart and every confirmation read "…under Food, on 11 Sep"; in production they
+  differ by seconds, which is enough to call today's entry yesterday's on either side
+  of a local midnight. `FreeTextHandler` now takes no `now` at all and the handler
+  holds the clock M6 and M3 stamp with. The sender's timestamp stays where it belongs,
+  in M8's admission windows.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors.
+
+`npx vitest run` — **729 passed / 9 skipped** across 51 files, up from 656: 73 new
+tests. Two new suites (`test/unit/telegram/free-text.test.ts`, 25;
+`test/unit/telegram/pending-payload.test.ts`, 13) plus 35 appended to existing ones —
+18 in `pipeline.test.ts` for `answerClarification`, 13 in `render.test.ts`, 3 in
+`test/integration/gateway.test.ts` for the widened constraint, 1 in
+`composition-root.test.ts` for `createServices`. The 9 skipped are the Neon-gated
+integration suites, skipped because this worktree has no `.env`.
+
+Two 4B assertions changed, both because they described 4D as pending: `pc:yes` is no
+longer an unrouted callback prefix (`cat:` is, and deliberately so), and free text
+during an open prompt now reaches M6 rather than the placeholder. The second got
+stronger rather than merely rewritten — it answers "How much was it?" with "12.50" and
+asserts Woolworths comes back, which only a merged parse can do. No other existing
+test changed.
+
+`npm run db:generate` — `0009_pending_prompt_mapping_kind`, one `DROP CONSTRAINT` plus
+one `ADD CONSTRAINT`, inspected and committed with its snapshot.
+`test/integration/gateway.test.ts` builds from the migration journal, so the widened
+constraint is proven against real Postgres (PGlite) rather than only in the TypeScript
+union.
+
+`npm run test:integration` — **not run.** The Neon suites need `DATABASE_URL` in a
+`.env` this worktree does not have, and `0009` has not been applied to the Neon branch
+in any case. **`npm run db:migrate` is Ricky's step, before that suite will pass and
+before 4E deploys.**
+
+**Nothing here has been deployed or seen a real Telegram message.** `setWebhook` is
+stage 4E, and production is the only environment (master plan §5.7).
+
+### Open questions
+
+1. **`DefaultLedgerService` still does not call `ParseEventCorrectionHook`.** M6's open
+   question 2, untouched here and deliberately out of 4D's scope: `was_corrected` is
+   the only honest measure of parser accuracy, and nothing sets it. 4D makes it matter
+   more, because 4D is the first code that creates a parse worth correcting.
+2. **The confirm threshold has never been seen against a real model.** 0.5–0.85 asks
+   the user; above 0.85 records. Both numbers are M6's untuned defaults, and how often
+   the middle band fires is what decides whether the two-messages-per-expense cost
+   above is a footnote or a problem. 4E's manual walkthrough is the first chance to
+   look.
+3. **`readYesNo` is English-only and will stay that way until someone asks.** Worth
+   naming because the typed fallback is what makes the keyboards answerable at all, and
+   it only works in one language.
