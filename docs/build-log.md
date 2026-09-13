@@ -2395,3 +2395,72 @@ already behaves this way, and M8's integration suite covers it.
    place a non-free-text event spends daily quota, which makes it more conspicuous than
    it was. Left alone here because it was decided separately and this change was not
    asked to reopen it.
+## M2 onboarding — step numbering and a shorter script — 2026-09-13
+
+Ricky's read of the live flow: a `/start` dropped the user straight into the timezone
+question with no idea how long setup was, and no individual step said it *was* a step —
+mid-flow, a prompt was indistinguishable from any other bot reply. Copy was also longer
+than it needed to be. Product change only; no contract, schema or routing change.
+
+### Built
+
+- **`Step N of 5 — <Title>` on every onboarding prompt** (`core/identity/onboarding.ts`) —
+  a new `stepPrompt()` is the single constructor for every `OnboardingPrompt` the module
+  emits, so the heading cannot be forgotten on one branch. That covers `promptFor()`'s
+  five steps *and* the two prompts step 1 builds itself (no timezone match; "did you mean").
+  Titles live in one `STEP_TITLES` table keyed by `OnboardingStep`, and the number is the
+  step's index in `ONBOARDING_STEPS` — adding or reordering a step renumbers the copy
+  automatically and fails the typecheck if a title is missing.
+- **An overview on the first message** — `start()` prepends a bulleted list of all five
+  steps when, and only when, the user is actually at step 1. Not a second message (M11's
+  "one reply per input step"), and not repeated on a `/start` that resumes at step 4 or on
+  a re-prompted step 1, where it would be noise.
+- **Tightened prompt copy throughout `promptFor()`** — every instruction the user needs to
+  answer is kept (the 3-letter currency code, `YYYY-MM-DD`, the `"Groceries 500"` cap
+  syntax, rename/remove, the tier's category limit, the "one budget before Done" rule, the
+  07:00 reminder and the per-tier reminder cap); the filler around them is gone. Step 4's
+  closing paragraph, the longest thing in the flow, drops from ~90 words to ~55. The
+  `Welcome to Budge Bot!` greeting moved out of the timezone question and into the overview.
+- **5 unit cases** (`test/unit/identity/onboarding.test.ts`) — the overview lists all five
+  steps ahead of the step-1 heading; each of the five prompts carries its own number; a
+  refusal's re-shown prompt and a timezone search result carry it too; the overview appears
+  only at the true start; and neither the completion nor the returning-user summary carries
+  a step indicator, because neither is a step.
+
+### Assumed
+
+Wording calls, all cheap to change if Ricky wants them differently:
+
+- **`Step 3 of 5 — Budget start date`**, heading on its own line above the question. Em
+  dash, not a colon, and the count is spelled out rather than `(3/5)`.
+- **The overview is bulleted, not numbered.** M7 renders any option list longer than
+  `MAX_INLINE_OPTIONS` (4) as its own numbered list, and step 1's seven zones always hit
+  that path — a numbered overview sitting directly above `1. Sydney / 2. Melbourne` would
+  read as one broken list. A regression test asserts no line of the first message starts
+  with its own number.
+- **Step titles:** Timezone / Currency / Budget start date / Categories and budgets /
+  Daily reminders (optional). "(optional)" is in the title because step 5 genuinely is.
+- **The overview shows once.** A resumed `/start` mid-flow gets only the numbered heading.
+  The alternative — repeating the list every time — was rejected as noise, given the
+  heading already says where the user is.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors.
+
+`npm test` — **748 passed / 10 skipped**, up from 743 passed / 10 skipped on this branch's
+base: the 5 new onboarding cases. The 10 skips are environmental, not new — 9 Postgres
+tests and the live-LLM eval, neither gated credential being present in this worktree.
+
+`npm run test:integration` — **81 passed / 9 skipped**; the 9 are the `DATABASE_URL`-gated
+Postgres cases, which **did not run** (no `DATABASE_URL` in this worktree). Nothing here
+touches the database, and no integration test asserts on prompt copy.
+
+`npm run db:generate` — not run; no schema change.
+
+### Open questions
+
+1. **Does step 4's "I've added Food to start" want to survive a removal?** It is stated as
+   history, so it still reads acceptably after the user removes Food — but the cap/rename/
+   remove examples in the same paragraph go on naming `Food` after it is gone. Pre-existing,
+   untouched here, and only worth fixing if it ever confuses anyone in practice.
