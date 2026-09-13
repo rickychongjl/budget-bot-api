@@ -94,6 +94,67 @@ describe('admission', () => {
     }
   });
 
+  it('keeps every command reachable at the cap, not just the management route', async () => {
+    // Ricky, 13 Sep 2026: the daily cap limits *using* the product, not running the
+    // account, so a capped user can still reach the commands that fix the entries
+    // that filled the day. These three were all `exemptFromAdmission: false` and were
+    // refused `DAILY_MESSAGE_LIMIT` before that ruling.
+    for (let i = 0; i < 5; i += 1) await dispatch(textUpdate(`spent ${i}`));
+    h.sender.sent.length = 0;
+
+    await dispatch(textUpdate('/budget'));
+    await dispatch(textUpdate('/categories'));
+    await dispatch(textUpdate('/delete'));
+
+    expect(h.sender.callCount).toBe(3);
+    for (const { message } of h.sender.sent) {
+      expect(message.text).not.toContain("You've used your");
+    }
+  });
+
+  it('records a command against fair use, but not against the day', async () => {
+    await dispatch(textUpdate('/categories'));
+
+    // The row exists — fair use has to see it — and is flagged as not counting.
+    const rows = h.entitlementRepository.usageRows(USER);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.countsTowardDaily).toBe(false);
+  });
+
+  it('still refuses free text at the cap — commands are waived, the cap is not gone', async () => {
+    for (let i = 0; i < 5; i += 1) await dispatch(textUpdate(`spent ${i}`));
+    // A waived command in between must not hand the day's quota back.
+    await dispatch(textUpdate('/categories'));
+    h.sender.sent.length = 0;
+
+    await dispatch(textUpdate('coffee 5'));
+
+    expect(h.sender.callCount).toBe(1);
+    expect(h.sender.onlyText).toContain("You've used your 5 messages today");
+  });
+
+  it('still rate-limits a burst of commands on fair use', async () => {
+    // Twenty admitted messages in the rolling two hours is the ceiling on both tiers,
+    // and the waiver is the daily half only. `/categories` is not
+    // `exemptFromAdmission`, so every one of these goes through the limiter.
+    for (let i = 0; i < 20; i += 1) await dispatch(textUpdate('/categories'));
+    h.sender.sent.length = 0;
+
+    await dispatch(textUpdate('/categories'));
+
+    expect(h.sender.callCount).toBe(1);
+    expect(h.sender.onlyText).toContain("You've reached 20 messages in 2 hours");
+  });
+
+  it('counts an unrecognised command, so a leading slash is not a free pass', async () => {
+    for (let i = 0; i < 5; i += 1) await dispatch(textUpdate(`spent ${i}`));
+    h.sender.sent.length = 0;
+
+    await dispatch(textUpdate('/nonsense'));
+
+    expect(h.sender.onlyText).toContain("You've used your 5 messages today");
+  });
+
   it('waives the daily cap while the user is still onboarding, but still records the message', async () => {
     h.identity.user = { userId: USER, isNew: false, onboarded: false };
 
