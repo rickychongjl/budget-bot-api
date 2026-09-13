@@ -64,6 +64,13 @@
       "when": 1789179251776,
       "tag": "0008_currency_on_cap",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789258741245,
+      "tag": "0009_pending_prompt_mapping_kind",
+      "breakpoints": true
     }
   ]
 }

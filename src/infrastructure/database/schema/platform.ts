@@ -52,8 +52,18 @@ export const inboundUpdate = pgTable(
  *   - `user_id` is the **primary key**, not just a FK: at most one open prompt per
  *     user, so a second question replaces the first rather than queueing behind it.
  *     The write path is an upsert on this key.
- *   - `payload jsonb` holds the serialised `ValidatedCandidate` (kind `confirm`) or
- *     the question (kind `clarify`). M7 never interprets it — it hands it back to M6.
+ *   - `payload jsonb` holds the serialised `ValidatedCandidate` (kind `confirm`), the
+ *     original message and its clarification reason (kind `clarify`), or the merchant
+ *     mapping being offered (kind `mapping`). The shape belongs to M6; M7 encodes and
+ *     decodes it in `channels/telegram/pending-payload.ts` and makes no judgement
+ *     about its meaning. A row that no longer decodes is cleared and answered
+ *     `STALE_ACTION` rather than crashing the dispatcher.
+ *   - **`mapping` was added by stage 4D (13 Sep 2026, migration 0009).** "Always
+ *     categorise Woolworths as Groceries?" has to survive to the next message, and a
+ *     `MappingProposal` does not fit Telegram's 64-byte `callback_data` — so the
+ *     proposal lives here and the button carries only yes/no. Stage 4C recorded the
+ *     two-kind constraint as the reason it chose arguments over keyboards; this is
+ *     the migration that decision predicted.
  *   - `parse_event_id` is nullable and `on delete set null`: M9 may retire a
  *     `parse_event` row under retention while a prompt is still open, and losing the
  *     correlation id must not delete the user's conversation.
@@ -79,7 +89,7 @@ export const pendingPrompt = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [check('pending_prompt_kind_check', sql`${t.kind} in ('confirm', 'clarify')`)],
+  (t) => [check('pending_prompt_kind_check', sql`${t.kind} in ('confirm', 'clarify', 'mapping')`)],
 );
 
 export type InboundUpdateRow = typeof inboundUpdate.$inferSelect;

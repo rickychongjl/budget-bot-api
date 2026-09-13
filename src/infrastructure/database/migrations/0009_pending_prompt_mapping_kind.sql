@@ -1,0 +1,2 @@
+ALTER TABLE "pending_prompt" DROP CONSTRAINT "pending_prompt_kind_check";--> statement-breakpoint
+ALTER TABLE "pending_prompt" ADD CONSTRAINT "pending_prompt_kind_check" CHECK ("pending_prompt"."kind" in ('confirm', 'clarify', 'mapping'));

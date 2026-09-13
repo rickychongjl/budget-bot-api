@@ -10,12 +10,25 @@ import type { Channel, Id, Instant, UserId } from '../../core/shared/common';
  * pairing is the same one `core/identity` has with `DrizzleIdentityRepository`.
  */
 
-export type PendingPromptKind = 'confirm' | 'clarify';
+/**
+ * The three questions the bot can be waiting on:
+ *
+ *   - `confirm` — "Record $89.50 at Bunnings under Shopping?" (M6 asked, because it
+ *     was confident enough to parse but not confident enough to record).
+ *   - `clarify` — a targeted question M6 wrote, answered by the next message.
+ *   - `mapping` — "Always categorise Woolworths as Groceries?", asked *after* a
+ *     transaction is already recorded.
+ *
+ * `mapping` arrived with stage 4D and migration 0009. The constraint in the database
+ * is the same list; keep the two in step.
+ */
+export type PendingPromptKind = 'confirm' | 'clarify' | 'mapping';
 
 /**
- * An open question the bot is waiting on an answer to. `payload` is M6's — the
- * serialised candidate for a `confirm`, the question for a `clarify`. M7 stores and
- * returns it without interpreting it; stage 4D is what hands it back to the pipeline.
+ * An open question the bot is waiting on an answer to. `payload` is M6's business,
+ * encoded and decoded by `pending-payload.ts`: the serialised candidate for a
+ * `confirm`, the original message and reason for a `clarify`, the proposal for a
+ * `mapping`. The repository stores and returns it without interpreting it.
  */
 export interface PendingPrompt {
   userId: UserId;
