@@ -117,10 +117,15 @@ export class OpenAiLlmParser implements LlmParser {
       });
     } catch (error) {
       const status = error instanceof OpenAI.APIError ? error.status : null;
-      // Never the request body, never the key: class name + status only.
+      // Never the request body, never the key: class name + status only — except a
+      // 401, where the SDK's own `AuthenticationError.message` is guaranteed to be
+      // about the key (truncated by OpenAI itself, e.g. "Incorrect API key provided:
+      // sk-***abc") and never echoes request content, unlike every other status.
+      const message = error instanceof OpenAI.AuthenticationError ? error.message : undefined;
       this.logger.log('warn', 'llm_parse_api_error', {
         errorClass: error instanceof Error ? error.name : typeof error,
         status: status ?? null,
+        ...(message === undefined ? {} : { message }),
       });
       throw new LlmParseError('api_error', 'LLM API call failed', usage(null, null));
     }
