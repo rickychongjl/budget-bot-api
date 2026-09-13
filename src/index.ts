@@ -245,6 +245,7 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
     categories,
     allowance,
     gateway: gatewayRepository,
+    clock,
   });
 
   // --- M7's inbound half (stage 4B) ----------------------------------------------

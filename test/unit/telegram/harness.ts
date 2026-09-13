@@ -200,6 +200,7 @@ export function createHarness(now: string | number = '2026-09-11T02:00:00Z'): Ha
     categories: domain.categories,
     allowance: domain.allowance,
     gateway,
+    clock,
   });
 
   const dispatcher = new TelegramDispatcher({

@@ -81,14 +81,21 @@ export interface CallbackAcknowledger {
  *
  * Every method returns exactly one message, including its failure cases: a stale
  * button and an undecodable prompt both answer `STALE_ACTION` rather than throwing.
+ *
+ * **No `now` is passed.** The dispatcher's `now` is the sender's timestamp off the
+ * Telegram update, which is the right clock for M8's admission windows and the wrong
+ * one here: M6 stamps a transaction from its own injected `Clock`, so a handler
+ * deciding "was this today?" against Telegram's timestamp can call an entry
+ * yesterday's on the strength of a few seconds' skew across a local midnight. This
+ * path uses the same clock that stamped the row.
  */
 export interface FreeTextHandler {
-  handleFreeText(userId: UserId, text: string, now: Instant): Promise<OutboundMessage>;
-  handlePromptAnswer(userId: UserId, text: string, now: Instant): Promise<OutboundMessage>;
+  handleFreeText(userId: UserId, text: string): Promise<OutboundMessage>;
+  handlePromptAnswer(userId: UserId, text: string): Promise<OutboundMessage>;
   /** `pc:yes` / `pc:no` — record the candidate the bot asked about, or drop it. */
-  answerConfirm(userId: UserId, yes: boolean, now: Instant): Promise<OutboundMessage>;
+  answerConfirm(userId: UserId, yes: boolean): Promise<OutboundMessage>;
   /** `map:yes` / `map:no` — remember this merchant's category, or keep asking. */
-  answerMapping(userId: UserId, yes: boolean, now: Instant): Promise<OutboundMessage>;
+  answerMapping(userId: UserId, yes: boolean): Promise<OutboundMessage>;
 }
 
 export interface DispatcherDeps {
@@ -201,7 +208,7 @@ export class TelegramDispatcher {
     // 4. Explicit events, before any text fallback.
     if (event.kind === 'callback_query') {
       await this.deps.callbacks.answerCallbackQuery(event.callbackQueryId);
-      return this.routeCallback(resolved, event.data, now);
+      return this.routeCallback(resolved, event.data);
     }
     if (event.kind === 'pre_checkout' || event.kind === 'successful_payment') {
       return { text: PAYMENTS_NOT_LIVE_REPLY };
@@ -225,11 +232,11 @@ export class TelegramDispatcher {
     // 8. An open question takes the next free-text message as its answer.
     const open = await this.deps.gateway.findPendingPrompt(resolved.userId);
     if (open !== null) {
-      return this.deps.freeText.handlePromptAnswer(resolved.userId, event.text, now);
+      return this.deps.freeText.handlePromptAnswer(resolved.userId, event.text);
     }
 
     // 9. Free text → M6.
-    return this.deps.freeText.handleFreeText(resolved.userId, event.text, now);
+    return this.deps.freeText.handleFreeText(resolved.userId, event.text);
   }
 
   /**
@@ -257,7 +264,6 @@ export class TelegramDispatcher {
   private async routeCallback(
     resolved: ResolvedUser,
     data: string,
-    now: Instant,
   ): Promise<OutboundMessage | null> {
     const onboarding = parseOnboardingCallbackData(data);
     if (onboarding !== null) {
@@ -287,11 +293,11 @@ export class TelegramDispatcher {
     // a press with nothing open is stale; the dispatcher does not read the row.
     const confirm = parseConfirmCallbackData(data);
     if (confirm !== null) {
-      return this.deps.freeText.answerConfirm(resolved.userId, confirm, now);
+      return this.deps.freeText.answerConfirm(resolved.userId, confirm);
     }
     const mapping = parseMappingCallbackData(data);
     if (mapping !== null) {
-      return this.deps.freeText.answerMapping(resolved.userId, mapping, now);
+      return this.deps.freeText.answerMapping(resolved.userId, mapping);
     }
 
     // A prefix nothing claims. A press that does nothing is worse than one that says so.

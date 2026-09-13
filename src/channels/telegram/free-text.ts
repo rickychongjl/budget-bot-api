@@ -3,6 +3,7 @@ import type { DailyAllowanceService } from '../../core/allowance/allowance-servi
 import type { IdentityService } from '../../core/identity/identity-service';
 import type { CategoryService } from '../../core/ledger/category-service';
 import type { Transaction, ValidatedCandidate } from '../../core/ledger/ledger-service';
+import type { Clock } from '../../core/shared/clock';
 import type { Id, Instant, LocalDate, UserId } from '../../core/shared/common';
 import { localDateAt } from '../../core/shared/local-date';
 import type { OutboundMessage } from '../../core/shared/messaging';
@@ -54,6 +55,13 @@ export interface TelegramFreeTextDeps {
   /** M5, for the line that follows a confirmation. */
   allowance: Pick<DailyAllowanceService, 'availableToday'>;
   gateway: GatewayRepository;
+  /**
+   * The same clock M6 stamps a transaction with — deliberately not the sender's
+   * timestamp off the Telegram update. "Was this today?" has to be asked against the
+   * clock that decided the entry's date, or a few seconds' skew across a local
+   * midnight makes the bot call today's entry yesterday's.
+   */
+  clock: Clock;
 }
 
 export const DROPPED_REPLY = 'Dropped it. Nothing was recorded.';
@@ -63,10 +71,10 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
   constructor(private readonly deps: TelegramFreeTextDeps) {}
 
   /** Step 9: an ordinary message from someone with no open question. */
-  async handleFreeText(userId: UserId, text: string, now: Instant): Promise<OutboundMessage> {
+  async handleFreeText(userId: UserId, text: string): Promise<OutboundMessage> {
     const context = await this.contextFor(userId);
     const outcome = await this.deps.pipeline.parse(text, context);
-    return this.afterParse(context, outcome, now, text);
+    return this.afterParse(context, outcome, text);
   }
 
   /**
@@ -79,12 +87,12 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
    * abandoned question is dropped rather than queued, which is also what the table's
    * one-row-per-user primary key already enforces.
    */
-  async handlePromptAnswer(userId: UserId, text: string, now: Instant): Promise<OutboundMessage> {
+  async handlePromptAnswer(userId: UserId, text: string): Promise<OutboundMessage> {
     const open = await this.deps.gateway.findPendingPrompt(userId);
     // Nothing open: the dispatcher only routes here when there is, but a concurrent
     // /cancel can empty the row in between. Treating it as fresh text is what the
     // user typed anyway.
-    if (open === null) return this.handleFreeText(userId, text, now);
+    if (open === null) return this.handleFreeText(userId, text);
 
     const payload = decodePendingPayload(open.kind, open.payload);
     if (payload === null) return this.discard(userId);
@@ -105,28 +113,27 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
         return this.afterParse(
           context,
           outcome,
-          now,
           mergeClarificationAnswer(payload.original, payload.reason, text),
         );
       }
       case 'confirm': {
         const answer = readYesNo(text);
-        if (answer === null) return this.supersede(userId, text, now);
-        return this.settleConfirm(userId, payload, answer, now);
+        if (answer === null) return this.supersede(userId, text);
+        return this.settleConfirm(userId, payload, answer);
       }
       case 'mapping': {
         const answer = readYesNo(text);
-        if (answer === null) return this.supersede(userId, text, now);
+        if (answer === null) return this.supersede(userId, text);
         return this.settleMapping(userId, payload, answer);
       }
     }
   }
 
   /** The `pc:yes` / `pc:no` buttons. */
-  async answerConfirm(userId: UserId, yes: boolean, now: Instant): Promise<OutboundMessage> {
+  async answerConfirm(userId: UserId, yes: boolean): Promise<OutboundMessage> {
     const payload = await this.openPayload(userId, 'confirm');
     if (payload === null) return this.discard(userId);
-    return this.settleConfirm(userId, payload, yes, now);
+    return this.settleConfirm(userId, payload, yes);
   }
 
   /** The `map:yes` / `map:no` buttons. */
@@ -151,10 +158,10 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
   private async afterParse(
     context: UserParseContext,
     outcome: ParseOutcome,
-    now: Instant,
     /** The text M6 was given. A `clarify` has to remember it to be answerable. */
     parsedText: string,
   ): Promise<OutboundMessage> {
+    const now = this.deps.clock.now();
     const today = localDateAt(now, context.timezone);
 
     switch (outcome.kind) {
@@ -215,7 +222,6 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
     userId: UserId,
     payload: Extract<PendingPayload, { kind: 'confirm' }>,
     yes: boolean,
-    now: Instant,
   ): Promise<OutboundMessage> {
     if (!yes) {
       await this.deps.gateway.clearPendingPrompt(userId);
@@ -232,7 +238,7 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
       payload.parseEventId,
       payload.mappingProposal,
     );
-    return this.afterParse(context, outcome, now, payload.candidate.rawText);
+    return this.afterParse(context, outcome, payload.candidate.rawText);
   }
 
   private async settleMapping(
@@ -270,9 +276,9 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
    * treated as what it is. The entry the user is now logging matters more than the
    * one they have stopped talking about.
    */
-  private async supersede(userId: UserId, text: string, now: Instant): Promise<OutboundMessage> {
+  private async supersede(userId: UserId, text: string): Promise<OutboundMessage> {
     await this.deps.gateway.clearPendingPrompt(userId);
-    return this.handleFreeText(userId, text, now);
+    return this.handleFreeText(userId, text);
   }
 
   /**
