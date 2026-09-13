@@ -106,6 +106,31 @@ describe('OpenAiLlmParser', () => {
     expect(down.logger.lines.map((l) => l.event)).toContain('llm_parse_api_error');
   });
 
+  it('logs OpenAI\'s own auth-error message on a 401, since it is already key-redacted by OpenAI', async () => {
+    const unauthorized = harness(() =>
+      new Response(
+        JSON.stringify({ error: { message: 'Incorrect API key provided: sk-***abc.', type: 'invalid_request_error' } }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+
+    await expect(unauthorized.parser.parse('x', CONTEXT)).rejects.toMatchObject({ code: 'api_error' });
+
+    const line = unauthorized.logger.lines.find((l) => l.event === 'llm_parse_api_error');
+    expect(line?.fields.status).toBe(401);
+    expect(line?.fields.message).toContain('Incorrect API key provided');
+  });
+
+  it('does not attach a message for a non-auth failure, since that body could echo request content', async () => {
+    const down = harness(() => new Response('{"error":{"message":"boom"}}', { status: 500, headers: { 'content-type': 'application/json' } }));
+
+    await down.parser.parse('x', CONTEXT).catch(() => undefined);
+
+    const line = down.logger.lines.find((l) => l.event === 'llm_parse_api_error');
+    expect(line?.fields.status).toBe(500);
+    expect(line?.fields.message).toBeUndefined();
+  });
+
   it('never logs the API key, the message text, or the categories', async () => {
     const down = harness(() => new Response('{"error":{"message":"secret text woolies"}}', { status: 500, headers: { 'content-type': 'application/json' } }));
     await down.parser.parse('woolies 82.40', CONTEXT).catch(() => undefined);
