@@ -23,6 +23,14 @@ export const cancelCommand: CommandHandler = {
     if (open === null) return { text: "There's nothing waiting on an answer." };
 
     await context.services.gateway.clearPendingPrompt(userId);
-    return { text: 'Dropped it. Nothing was recorded.' };
+    // A `mapping` question is asked *after* the entry is recorded — "nothing was
+    // recorded" would be a plain lie about the user's own ledger, and the kind of
+    // lie that sends someone to /delete to fix something that is not broken.
+    return {
+      text:
+        open.kind === 'mapping'
+          ? "OK, I won't remember that one. The entry itself is still recorded."
+          : 'Dropped it. Nothing was recorded.',
+    };
   },
 };

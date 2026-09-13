@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { DueUser, SendOutcome } from '../../../src/core/allowance/allowance-service';
 import type { Env, Services } from '../../../src/index';
-import { MAX_DUE_USERS_PER_TICK, createApp, dispatchDueUsers, runScheduled } from '../../../src/index';
+import { MAX_DUE_USERS_PER_TICK, createApp, createServices, dispatchDueUsers, runScheduled } from '../../../src/index';
+import { NoopLogger } from '../../../src/observability/log';
+import { TestClock } from '../../support/test-clock';
 
 /**
  * The Worker's own surface: route guards and the cron fan-out. Not the services behind
@@ -234,5 +236,21 @@ describe('the cron fan-out', () => {
     // inside the due window retries it.
     expect(failures).toBe(1);
     expect(reached).toEqual(['user-1', 'user-3']);
+  });
+});
+
+describe('createServices', () => {
+  it('wires every service, the free-text path included, without touching the network', () => {
+    // The composition root is otherwise only exercised in production. `postgres.js`
+    // connects lazily and `OpenAiLlmParser` only holds its key until a parse, so
+    // building the whole graph costs nothing and catches the mistakes that matter
+    // here: a missing dependency, or a cycle resolved in the wrong order.
+    const services = createServices(ENV, { clock: new TestClock('2026-09-13T00:00:00Z'), logger: new NoopLogger() });
+
+    expect(services.telegramWebhook).toBeDefined();
+    expect(services.gateway).toBeDefined();
+    for (const name of ['identity', 'onboarding', 'entitlements', 'budgets', 'ledger', 'categories', 'allowance', 'reminders', 'sender'] as const) {
+      expect(services[name], name).toBeDefined();
+    }
   });
 });

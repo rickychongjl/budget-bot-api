@@ -1,6 +1,14 @@
 import { createCatalogue } from '../../../src/channels/telegram/commands/catalogue';
 import { TelegramDispatcher } from '../../../src/channels/telegram/dispatcher';
 import type { IdentityCollaborator } from '../../../src/channels/telegram/dispatcher';
+import { TelegramFreeTextHandler } from '../../../src/channels/telegram/free-text';
+import { DefaultMechanicalTransactionParser } from '../../../src/parsing/mechanical-parser';
+import { DefaultMessageNormalizer } from '../../../src/parsing/normalizer';
+import { TransactionParsingPipeline } from '../../../src/parsing/pipeline';
+import { DefaultTransactionCandidateValidator } from '../../../src/parsing/validator';
+import { InMemoryMerchantMappingRepository } from '../../support/in-memory-merchant-mapping-repository';
+import { InMemoryParseEventRepository } from '../../support/in-memory-parse-event-repository';
+import { ScriptedLlmParser } from '../../support/scripted-llm-parser';
 import type { OnboardingInput, OnboardingReply } from '../../../src/core/identity/onboarding';
 import type { OnboardingService } from '../../../src/core/identity/onboarding';
 import { createEntitlementService } from '../../../src/core/entitlements/default-entitlement-service';
@@ -125,6 +133,12 @@ export interface Harness extends DomainServices {
   sender: FakeMessageSender;
   callbacks: FakeCallbacks;
   clock: TestClock;
+  /** M6 for real over test adapters — only the model itself is scripted. */
+  pipeline: TransactionParsingPipeline;
+  freeText: TelegramFreeTextHandler;
+  llm: ScriptedLlmParser;
+  mappings: InMemoryMerchantMappingRepository;
+  parseEvents: InMemoryParseEventRepository;
 }
 
 /**
@@ -156,6 +170,38 @@ export function createHarness(now: string | number = '2026-09-11T02:00:00Z'): Ha
     clock,
   });
 
+  // M6 for real, the way `test/eval/fixture.ts` wires it — every stage is the
+  // production class except the model, which is scripted. A fake pipeline here would
+  // assert nothing: the whole question 4D answers is whether a real parse, a real
+  // ledger write and a real allowance read reach the user as one sentence.
+  const normalizer = new DefaultMessageNormalizer();
+  const mappings = new InMemoryMerchantMappingRepository();
+  const parseEvents = new InMemoryParseEventRepository();
+  // No scripted response by default: a test that reaches the model without saying
+  // what it answers gets `llm_unavailable`, which is visible, rather than a silent
+  // default parse.
+  const llm = new ScriptedLlmParser();
+
+  const pipeline = new TransactionParsingPipeline({
+    clock,
+    normalizer,
+    mechanicalParser: new DefaultMechanicalTransactionParser(normalizer),
+    merchantMappings: mappings,
+    llmParser: llm,
+    validator: new DefaultTransactionCandidateValidator(normalizer),
+    parseEvents,
+    ledger: domain.ledger,
+    allowance: domain.allowance,
+  });
+
+  const freeText = new TelegramFreeTextHandler({
+    pipeline,
+    identity,
+    categories: domain.categories,
+    allowance: domain.allowance,
+    gateway,
+  });
+
   const dispatcher = new TelegramDispatcher({
     identity,
     entitlements,
@@ -174,6 +220,7 @@ export function createHarness(now: string | number = '2026-09-11T02:00:00Z'): Ha
     clock,
     logger: new NoopLogger(),
     supportContact: SUPPORT_CONTACT,
+    freeText,
   });
 
   return {
@@ -187,6 +234,11 @@ export function createHarness(now: string | number = '2026-09-11T02:00:00Z'): Ha
     sender,
     callbacks,
     clock,
+    pipeline,
+    freeText,
+    llm,
+    mappings,
+    parseEvents,
   };
 }
 
@@ -214,6 +266,22 @@ export async function reply(h: Harness, text: string): Promise<string> {
 export async function replyMessage(h: Harness, text: string): Promise<OutboundMessage> {
   h.sender.sent.length = 0;
   await h.dispatcher.dispatch(parseUpdate(textUpdate(text)));
+  if (h.sender.sent.length !== 1) {
+    throw new Error(`expected exactly one message, got ${h.sender.sent.length}`);
+  }
+  return h.sender.sent[0]!.message;
+}
+
+/**
+ * Press an inline-keyboard button and return the single reply.
+ *
+ * Buttons go through the dispatcher too, and for the same reason commands do: a press
+ * is admitted, acknowledged and routed before it reaches a handler, and every one of
+ * those steps is a place it can be lost.
+ */
+export async function tap(h: Harness, data: string): Promise<OutboundMessage> {
+  h.sender.sent.length = 0;
+  await h.dispatcher.dispatch(parseUpdate(callbackUpdate(data)));
   if (h.sender.sent.length !== 1) {
     throw new Error(`expected exactly one message, got ${h.sender.sent.length}`);
   }

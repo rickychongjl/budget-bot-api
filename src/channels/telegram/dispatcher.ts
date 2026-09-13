@@ -22,7 +22,9 @@ import { historyPage } from './commands/history';
 import type { GatewayRepository } from './gateway-repository';
 import {
   paginate,
+  parseConfirmCallbackData,
   parseHistoryCallbackData,
+  parseMappingCallbackData,
   parseOnboardingCallbackData,
   renderOnboardingReply,
   renderRefusal,
@@ -106,8 +108,7 @@ export interface DispatcherDeps {
   clock: Clock;
   logger: Logger;
   supportContact: string;
-  /** Absent until stage 4D. */
-  freeText?: FreeTextHandler;
+  freeText: FreeTextHandler;
 }
 
 const CHANNEL = 'telegram' as const;
@@ -119,8 +120,6 @@ export const PAYMENTS_NOT_LIVE_REPLY =
   "Payments aren't live yet, so I can't take that. Nothing was charged.";
 export const APOLOGY =
   "Something went wrong on my end and I couldn't finish that. Try again in a moment.";
-export const FREE_TEXT_NOT_WIRED_REPLY =
-  "I can't read free-text expenses yet — that's the next thing I'm learning. Try /help for what I can do now.";
 
 export class TelegramDispatcher {
   constructor(private readonly deps: DispatcherDeps) {}
@@ -202,7 +201,7 @@ export class TelegramDispatcher {
     // 4. Explicit events, before any text fallback.
     if (event.kind === 'callback_query') {
       await this.deps.callbacks.answerCallbackQuery(event.callbackQueryId);
-      return this.routeCallback(resolved, event.data);
+      return this.routeCallback(resolved, event.data, now);
     }
     if (event.kind === 'pre_checkout' || event.kind === 'successful_payment') {
       return { text: PAYMENTS_NOT_LIVE_REPLY };
@@ -226,12 +225,10 @@ export class TelegramDispatcher {
     // 8. An open question takes the next free-text message as its answer.
     const open = await this.deps.gateway.findPendingPrompt(resolved.userId);
     if (open !== null) {
-      if (this.deps.freeText === undefined) return { text: FREE_TEXT_NOT_WIRED_REPLY };
       return this.deps.freeText.handlePromptAnswer(resolved.userId, event.text, now);
     }
 
     // 9. Free text → M6.
-    if (this.deps.freeText === undefined) return { text: FREE_TEXT_NOT_WIRED_REPLY };
     return this.deps.freeText.handleFreeText(resolved.userId, event.text, now);
   }
 
@@ -260,6 +257,7 @@ export class TelegramDispatcher {
   private async routeCallback(
     resolved: ResolvedUser,
     data: string,
+    now: Instant,
   ): Promise<OutboundMessage | null> {
     const onboarding = parseOnboardingCallbackData(data);
     if (onboarding !== null) {
@@ -283,8 +281,20 @@ export class TelegramDispatcher {
       return historyPage(this.commandServices(), resolved.userId, cursor);
     }
 
-    // `pc:` and `map:` arrive in 4D. Until their handlers exist, a press is stale by
-    // definition rather than silently ignored.
+    // Stage 4D's two buttons. Both carry nothing but yes/no — what they answer lives
+    // in `pending_prompt`, which is also how a typed "yes" reaches the same place
+    // (M11: every keyboard needs a free-text fallback). The handler is what decides
+    // a press with nothing open is stale; the dispatcher does not read the row.
+    const confirm = parseConfirmCallbackData(data);
+    if (confirm !== null) {
+      return this.deps.freeText.answerConfirm(resolved.userId, confirm, now);
+    }
+    const mapping = parseMappingCallbackData(data);
+    if (mapping !== null) {
+      return this.deps.freeText.answerMapping(resolved.userId, mapping, now);
+    }
+
+    // A prefix nothing claims. A press that does nothing is worse than one that says so.
     this.deps.logger.log('info', 'telegram.callback.unrouted', { prefix: data.split(':')[0] ?? '' });
     return renderRefusal('STALE_ACTION');
   }
