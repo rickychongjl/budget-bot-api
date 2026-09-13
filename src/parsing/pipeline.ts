@@ -119,6 +119,27 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
   }
 
   /**
+   * The user has answered a `clarify` question. M6 decides how the answer combines
+   * with the message that prompted it, then runs the ordinary `parse` path — so the
+   * answered attempt produces exactly one new `parse_event` row, like any other
+   * parse, and every validation rule applies to it unchanged.
+   *
+   * This exists so M7 does not have to hold the policy. "Append the answer to the
+   * original" is wrong for half the reasons: appending "4.50" to "coffee 4,50" still
+   * contains a decimal comma, appending a day to a message with an impossible date
+   * still contains the impossible date, and both would ask the same question forever.
+   * Which reasons those are is a fact about the parser, so it lives here.
+   */
+  async answerClarification(
+    context: UserParseContext,
+    original: string,
+    reason: ClarifyReason,
+    answer: string,
+  ): Promise<ParseOutcome> {
+    return this.parse(mergeClarificationAnswer(original, reason, answer), context);
+  }
+
+  /**
    * The user said "yes" to a `confirm` outcome. Records the already-validated
    * candidate under the original parse event; nothing is re-parsed.
    */
@@ -202,6 +223,52 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
       policy: this.policy,
     };
   }
+}
+
+/**
+ * Reasons where the original message is itself the problem: it carries too many
+ * amounts, an amount the extractors cannot read, a foreign currency, or a date that
+ * is impossible or contradictory. The offending token is still in the original text,
+ * so keeping it would re-trigger the same guard and ask the same question again. The
+ * answer therefore stands alone.
+ *
+ * Every other reason means the original was fine but incomplete — no amount, no
+ * category, a category we do not have, an intent or confidence the model was unsure
+ * of — and the answer is the missing piece, so it extends the original.
+ */
+const REPLACING_REASONS: ReadonlySet<ClarifyReason> = new Set<ClarifyReason>([
+  'multiple_amounts',
+  'invalid_amount',
+  'foreign_currency',
+  'ambiguous_date',
+  'invalid_date',
+  'correction_intent',
+]);
+
+/**
+ * How a clarification answer becomes the text to parse. Pure, and exported so the
+ * rule is testable and quotable on its own rather than inferred from a transcript.
+ *
+ * Known cost of the replacing branch, accepted rather than hidden: a user who answers
+ * "the 30th" to "which day was it?" has dropped the merchant and amount along with
+ * the bad date, and will be asked for them next. Each question converges — nothing
+ * loops — but it can take two round trips. Reconstructing the good half of the
+ * original would mean re-running the mechanical parse and trusting its residual
+ * description, which is exactly what the decimal-comma case shows cannot be trusted.
+ */
+export function mergeClarificationAnswer(
+  original: string,
+  reason: ClarifyReason,
+  answer: string,
+): string {
+  const trimmedAnswer = answer.trim();
+  const trimmedOriginal = original.trim();
+  // An empty answer is not an answer; re-parsing the original asks again, which is
+  // the honest outcome and costs no model call the first guard would not have cost.
+  if (trimmedAnswer.length === 0) return trimmedOriginal;
+  if (REPLACING_REASONS.has(reason)) return trimmedAnswer;
+  if (trimmedOriginal.length === 0) return trimmedAnswer;
+  return `${trimmedOriginal} ${trimmedAnswer}`;
 }
 
 /** One parse's state — keeps `TransactionParsingPipeline.parse` readable as the routing decision it is. */

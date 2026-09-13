@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { LlmParseError } from '../../src/parsing/llm-parser';
+import { mergeClarificationAnswer } from '../../src/parsing/pipeline';
+import type { ClarifyReason } from '../../src/parsing/types';
 import { llmResult } from '../support/scripted-llm-parser';
 import { USER_ID, categoryId, makeHarness } from '../eval/fixture';
 
@@ -165,5 +167,85 @@ describe('TransactionParsingPipeline — ledger / allowance hand-off', () => {
       parseRoute: 'mapping',
     });
     expect(h.allowance.recalculated).toEqual([{ userId: USER_ID, categoryId: categoryId('Groceries') }]);
+  });
+});
+
+describe('TransactionParsingPipeline — answerClarification', () => {
+  /**
+   * The whole rule, in one table. `satisfies Record<ClarifyReason, …>` is
+   * load-bearing: a new reason added to the union without a decision here fails
+   * `npm run typecheck` rather than silently defaulting to one of the two
+   * behaviours — and defaulting wrongly is what loops a conversation.
+   */
+  const STRATEGY = {
+    multiple_amounts: 'replace',
+    invalid_amount: 'replace',
+    foreign_currency: 'replace',
+    ambiguous_date: 'replace',
+    invalid_date: 'replace',
+    correction_intent: 'replace',
+    no_amount: 'append',
+    missing_category: 'append',
+    unknown_category: 'append',
+    ambiguous_intent: 'append',
+    multi_category_merchant: 'append',
+    low_confidence: 'append',
+    model_asked: 'append',
+    llm_unavailable: 'append',
+  } satisfies Record<ClarifyReason, 'replace' | 'append'>;
+
+  it.each(Object.entries(STRATEGY))('%s %ss the original', (reason, strategy) => {
+    const merged = mergeClarificationAnswer('woolies 82.40', reason as ClarifyReason, 'groceries');
+    expect(merged).toBe(strategy === 'replace' ? 'groceries' : 'woolies 82.40 groceries');
+  });
+
+  it('treats an empty answer as no answer and re-parses the original', () => {
+    expect(mergeClarificationAnswer('woolies 82.40', 'missing_category', '   ')).toBe('woolies 82.40');
+  });
+
+  it('appends the answer for a missing category, and writes its own parse_event', async () => {
+    const h = makeHarness({ seedMappings: false });
+    h.llm.enqueue(
+      llmResult({ intent: 'expense', amount: 30, currency: 'AUD', confidence: 0.95 }),
+      llmResult({ intent: 'expense', amount: 30, currency: 'AUD', category: 'Groceries', confidence: 0.95 }),
+    );
+
+    const asked = await h.pipeline.parse('spent 30', h.context);
+    expect(asked).toMatchObject({ kind: 'clarify', reason: 'missing_category' });
+
+    const answered = await h.pipeline.answerClarification(h.context, 'spent 30', 'missing_category', 'groceries');
+
+    expect(h.llm.calls[1]!.text).toBe('spent 30 groceries');
+    expect(answered).toMatchObject({ kind: 'recorded' });
+    expect(h.ledger.recorded[0]!.candidate).toMatchObject({ amountMinorUnits: 3000n, categoryId: categoryId('Groceries') });
+    // One row per parse, the answered attempt included — M9's invariant does not get
+    // an exemption for the second half of a conversation.
+    expect(h.parseEvents.events).toHaveLength(2);
+  });
+
+  it('lets the answer stand alone when the original had two amounts', async () => {
+    const h = makeHarness();
+
+    const asked = await h.pipeline.parse('coffee 5 and lunch 16', h.context);
+    expect(asked).toMatchObject({ kind: 'clarify', reason: 'multiple_amounts' });
+
+    const answered = await h.pipeline.answerClarification(h.context, 'coffee 5 and lunch 16', 'multiple_amounts', 'coffee 5');
+
+    // Appending would still have carried two amounts and asked the same question.
+    expect(answered).toMatchObject({ kind: 'recorded', route: 'mapping' });
+    expect(h.ledger.recorded[0]!.candidate).toMatchObject({ amountMinorUnits: 500n, categoryId: categoryId('Coffee') });
+    expect(h.llm.calls).toHaveLength(0);
+  });
+
+  it('lets the answer stand alone when the original had a decimal comma', async () => {
+    const h = makeHarness();
+
+    const asked = await h.pipeline.parse('coffee 4,50', h.context);
+    expect(asked).toMatchObject({ kind: 'clarify', reason: 'invalid_amount' });
+
+    const answered = await h.pipeline.answerClarification(h.context, 'coffee 4,50', 'invalid_amount', 'coffee 4.50');
+
+    expect(answered).toMatchObject({ kind: 'recorded', route: 'mapping' });
+    expect(h.ledger.recorded[0]!.candidate).toMatchObject({ amountMinorUnits: 450n });
   });
 });
