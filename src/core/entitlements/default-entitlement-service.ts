@@ -93,9 +93,11 @@ export class DefaultEntitlementService<X> implements EntitlementService {
    *
    * `options.skipDailyCap` waives step 3's daily half only — M7 passes it for a user
    * who has not finished onboarding, who would otherwise exhaust Free's five-message
-   * day on the sign-up flow itself (`AdmitMessageOptions`). The row is still written,
-   * flagged `countsTowardDaily: false`, so fair use still sees it and the day's real
-   * quota is untouched once the account is live.
+   * day on the sign-up flow itself, and (Ricky, 13 Sep 2026) for any message the
+   * command router recognises, so managing the account stays possible at the cap
+   * (`AdmitMessageOptions`). The row is still written, flagged
+   * `countsTowardDaily: false`, so fair use still sees it and the day's real quota is
+   * spent only on the free-text product messages the cap is actually about.
    */
   async admitMessage(
     userId: UserId,

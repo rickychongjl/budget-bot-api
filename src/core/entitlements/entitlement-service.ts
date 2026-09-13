@@ -36,14 +36,21 @@ export type AdmissionResult =
  * on a working account and is waived until onboarding completes; fair use is abuse
  * protection and is never waived.**
  *
+ * Ricky extended that ruling on 13 Sep 2026 to **every recognised slash command**, for
+ * the same reason: the cap limits using the product (logging expenses in free text),
+ * not running the account. A capped Free user who cannot reach `/budget`, `/categories`
+ * or `/delete` is locked out of correcting the entries that filled the day. Fair use
+ * is untouched — a command is admitted through the rolling window like anything else.
+ *
  * The message is still recorded either way — `usage_counter.counts_toward_daily`
  * carries the distinction, so an exempt message still fills the rolling window but
- * does not eat the day's quota once the account is live.
+ * does not eat the day's quota.
  */
 export interface AdmitMessageOptions {
   /**
    * Skip **only** the Free daily cap for this message. Defaults to false. The caller
-   * that sets it is M7's dispatcher, for a user whose `onboarding_step !== 'done'`.
+   * that sets it is M7's dispatcher, for a user whose `onboarding_step !== 'done'` or
+   * for a message the router recognises as one of its commands.
    * There is deliberately no option to skip fair use.
    */
   skipDailyCap?: boolean;
