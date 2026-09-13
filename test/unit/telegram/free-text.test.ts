@@ -238,6 +238,51 @@ describe('the clarify prompt', () => {
     expect(answer.text).toContain('Recorded $12.50 at Woolworths under Food.');
     expect(h.gateway.has(USER)).toBe(false);
   });
+
+  /**
+   * The 13 Sep 2026 production transcript, driven as the three separate Telegram
+   * messages it was — each one admitted, routed and answered on its own, with the
+   * `pending_prompt` row carrying the conversation between them.
+   *
+   * This is the closest this repo has to an end-to-end test and it is deliberately
+   * not a mock of one: the dispatcher, M6's normaliser/extractors/validator/policy,
+   * M3's ledger and M5's allowance are all the production classes. Only the model is
+   * scripted — and scripted to say what the real one said.
+   *
+   * What it caught: `model_asked` appended, so each answer that restated the same $5
+   * added another amount to the text the next round parsed. By the third message the
+   * mechanical guard saw two explicit amounts and refused the lot with "I found more
+   * than one amount", about a single $5 the user had now named three times.
+   */
+  it('records one entry after two rounds of the model asking about the same amount', async () => {
+    await h.seedCategory(USER, 'Coffee', { cap: 10000n });
+    const asksAboutTheAmount = (question: string): ReturnType<typeof llmResult> =>
+      llmResult({ intent: 'expense', needsClarification: true, clarificationQuestion: question });
+    h.llm.enqueue(
+      asksAboutTheAmount('Is this one coffee for $5, or two separate $5 coffee purchases?'),
+      asksAboutTheAmount('Is this one transaction for $5, or two separate coffees of $5 each?'),
+      llmResult({ intent: 'expense', amount: 5, currency: 'AUD', merchant: 'Coffee', category: 'Coffee', confidence: 0.96 }),
+    );
+
+    const first = await replyMessage(h, 'coffee 5');
+    expect(first.text).toBe('Is this one coffee for $5, or two separate $5 coffee purchases?');
+
+    const second = await replyMessage(h, 'one coffee for 5 dollars');
+    expect(second.text).toBe('Is this one transaction for $5, or two separate coffees of $5 each?');
+    // The row remembers what M6 actually parsed, which is the answer alone — not the
+    // original with the answer glued onto it.
+    expect(await h.gateway.findPendingPrompt(USER)).toMatchObject({
+      kind: 'clarify',
+      payload: { original: 'one coffee for 5 dollars' },
+    });
+
+    const third = await replyMessage(h, 'one transaction for $5');
+
+    expect(third.text).toContain('Recorded $5');
+    expect(third.text).not.toContain('more than one amount');
+    expect(h.store.transactions).toHaveLength(1);
+    expect(h.store.transactions[0]).toMatchObject({ amountMinorUnits: 500n, direction: 'expense' });
+  });
 });
 
 describe('/cancel says something true for each kind of question', () => {

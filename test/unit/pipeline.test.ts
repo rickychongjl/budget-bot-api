@@ -272,6 +272,21 @@ describe('TransactionParsingPipeline — answerClarification', () => {
     expect(mergeClarificationAnswer('woolies 82.40', 'missing_category', '   ')).toBe('woolies 82.40');
   });
 
+  /**
+   * The second half of the rule, which the reason alone cannot express: `model_asked`
+   * is "the model asked something", and one of the things it asks is to disambiguate
+   * an amount the message already carried. Restating that amount must supersede, or
+   * the merged text carries the same money twice.
+   */
+  it('lets an answer that restates the amount stand alone, whatever the reason says', () => {
+    expect(mergeClarificationAnswer('coffee 5', 'model_asked', 'one coffee for 5 dollars', true)).toBe(
+      'one coffee for 5 dollars',
+    );
+    expect(mergeClarificationAnswer('coffee 5', 'model_asked', 'one coffee for 5 dollars')).toBe(
+      'coffee 5 one coffee for 5 dollars',
+    );
+  });
+
   it('appends the answer for a missing category, and writes its own parse_event', async () => {
     const h = makeHarness({ seedMappings: false });
     h.llm.enqueue(
@@ -304,6 +319,104 @@ describe('TransactionParsingPipeline — answerClarification', () => {
     expect(answered).toMatchObject({ kind: 'recorded', route: 'mapping' });
     expect(h.ledger.recorded[0]!.candidate).toMatchObject({ amountMinorUnits: 500n, categoryId: categoryId('Coffee') });
     expect(h.llm.calls).toHaveLength(0);
+  });
+
+  /**
+   * The production transcript of 13 Sep 2026, verbatim. "coffee 5" carries one bare
+   * amount, so the mechanical layer passes it; the model then asks the question it is
+   * told to ask about a bare number ("one coffee for $5, or two $5 coffees?"). Both
+   * answers restate that same $5.
+   *
+   * Before the restatement rule, `model_asked` appended: round two parsed "coffee 5
+   * one coffee for 5 dollars" and round three "coffee 5 one coffee for 5 dollars one
+   * transaction for $5" — two *explicit* amounts — and `mechanicalGuard` refused the
+   * whole conversation with "I found more than one amount", about a single $5 the
+   * user had said three times. Each further answer made it worse.
+   */
+  it('never accumulates a restated amount across rounds, however many the model asks', async () => {
+    const h = makeHarness({ seedMappings: false });
+    const asksAboutTheAmount = (question: string): ReturnType<typeof llmResult> =>
+      llmResult({ intent: 'expense', needsClarification: true, clarificationQuestion: question });
+    h.llm.enqueue(
+      asksAboutTheAmount('Is this one coffee for $5, or two separate $5 coffee purchases?'),
+      asksAboutTheAmount('Is this one transaction for $5, or two separate coffees of $5 each?'),
+      llmResult({ intent: 'expense', amount: 5, currency: 'AUD', merchant: 'Coffee', category: 'Coffee', confidence: 0.95 }),
+    );
+
+    const first = await h.pipeline.parse('coffee 5', h.context);
+    expect(first).toMatchObject({ kind: 'clarify', reason: 'model_asked', parsedText: 'coffee 5' });
+
+    const second = await h.pipeline.answerClarification(h.context, 'coffee 5', 'model_asked', 'one coffee for 5 dollars');
+    // The answer states money of its own, so it supersedes rather than accumulating.
+    expect(h.llm.calls[1]!.text).toBe('one coffee for 5 dollars');
+    expect(second).toMatchObject({ kind: 'clarify', reason: 'model_asked', parsedText: 'one coffee for 5 dollars' });
+
+    const third = await h.pipeline.answerClarification(
+      h.context,
+      'one coffee for 5 dollars',
+      'model_asked',
+      'one transaction for $5',
+    );
+
+    expect(h.llm.calls[2]!.text).toBe('one transaction for $5');
+    expect(third).toMatchObject({ kind: 'recorded' });
+    expect(h.ledger.recorded).toHaveLength(1);
+    expect(h.ledger.recorded[0]!.candidate).toMatchObject({
+      amountMinorUnits: 500n,
+      categoryId: categoryId('Coffee'),
+    });
+  });
+
+  /**
+   * The other side of the same rule. An answer is only a restatement when there was
+   * something to restate: "12.50" answering "how much was it?" is the missing piece,
+   * and replacing would throw away the merchant the question was never about.
+   */
+  it('still appends an amount to a message that had none', async () => {
+    const h = makeHarness();
+    h.llm.enqueue(
+      llmResult({ intent: 'expense', amount: null, merchant: 'Woolworths', category: 'Groceries', confidence: 0.9 }),
+    );
+
+    const asked = await h.pipeline.parse('woolies', h.context);
+    expect(asked).toMatchObject({ kind: 'clarify', reason: 'no_amount' });
+
+    const answered = await h.pipeline.answerClarification(h.context, 'woolies', 'no_amount', '12.50');
+
+    expect(answered).toMatchObject({ kind: 'recorded', route: 'mapping' });
+    expect(h.ledger.recorded[0]!.candidate).toMatchObject({ amountMinorUnits: 1250n, categoryId: categoryId('Groceries') });
+  });
+
+  /**
+   * A bare number the original did not already state is not a restatement — it is
+   * the very token the model could not tell from a quantity. "2" answering "one
+   * coffee or two?" is a count, and a category called "Cafe 63" is a name; neither
+   * may quietly become the transaction's amount by standing alone.
+   */
+  it('does not treat an unrelated bare number in the answer as a restated amount', async () => {
+    const h = makeHarness({ seedMappings: false });
+    h.llm.enqueue(llmResult({ intent: 'expense', amount: 30, currency: 'AUD', confidence: 0.95 }));
+
+    await h.pipeline.parse('spent 30', h.context);
+    const answered = await h.pipeline.answerClarification(h.context, 'spent 30', 'missing_category', 'cafe 63');
+
+    expect(answered).toMatchObject({ kind: 'clarify', parsedText: 'spent 30 cafe 63' });
+  });
+
+  /** A bare number that repeats the one already stated is a restatement by definition. */
+  it('treats a bare repeat of the amount already stated as a restatement', async () => {
+    const h = makeHarness({ seedMappings: false });
+    h.llm.enqueue(
+      llmResult({ intent: 'expense', needsClarification: true, clarificationQuestion: 'One coffee, or two?' }),
+      llmResult({ intent: 'expense', amount: 5, currency: 'AUD', merchant: 'Coffee', category: 'Coffee', confidence: 0.95 }),
+    );
+
+    await h.pipeline.parse('coffee 5', h.context);
+    const answered = await h.pipeline.answerClarification(h.context, 'coffee 5', 'model_asked', 'just the one, 5');
+
+    expect(h.llm.calls[1]!.text).toBe('just the one, 5');
+    expect(answered).toMatchObject({ kind: 'recorded' });
+    expect(h.ledger.recorded[0]!.candidate).toMatchObject({ amountMinorUnits: 500n });
   });
 
   it('lets the answer stand alone when the original had a decimal comma', async () => {
