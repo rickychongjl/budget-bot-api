@@ -158,6 +158,9 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
   const telegramApi = new TelegramApiClient({
     token: env.TELEGRAM_BOT_TOKEN,
     logger,
+    // Same injected clock as everything else, so the Bot API round trip is timed off
+    // one time source (M9 stage timing).
+    clock,
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
   });
   const sender = new TelegramMessageSender(telegramApi);
@@ -280,6 +283,7 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
     allowance,
     gateway: gatewayRepository,
     clock,
+    logger,
   });
 
   // --- M7's inbound half (stage 4B) ----------------------------------------------

@@ -1,5 +1,6 @@
 import type { Clock } from '../../core/shared/clock';
 import type { Logger } from '../../observability/log';
+import { startTimer } from '../../observability/timing';
 import type { TelegramDispatcher } from './dispatcher';
 import type { GatewayRepository } from './gateway-repository';
 import { parseUpdate } from './update-parser';
@@ -16,6 +17,11 @@ import { parseUpdate } from './update-parser';
  *   2. Claim the update (`inbound_update`) → already claimed → 200, stop.
  *   3. Return 200.
  *   4. Background: dispatch.
+ *
+ * Timing (M9): this is where the clock on a whole message starts, so the receipt
+ * instant is captured here and handed to `dispatch` — every other stage measures
+ * itself, and the dispatcher closes the lifecycle with one total. `telegram.webhook.*`
+ * lines carry the update id and durations only; the body is never logged.
  *
  * The secret token is not optional. The webhook URL alone is not a credential — it
  * leaks into logs, proxies and screenshots — which is why `setWebhook` sets a token
@@ -50,6 +56,11 @@ export class TelegramWebhookHandler {
       return new Response('unauthorized', { status: 401 });
     }
 
+    // Everything downstream is measured against this instant, so it is taken before
+    // the body is even read: JSON parsing is part of the message's latency too.
+    const receivedAt = this.deps.clock.now();
+    const sinceReceipt = startTimer(this.deps.clock);
+
     let body: unknown;
     try {
       body = await request.json();
@@ -62,21 +73,38 @@ export class TelegramWebhookHandler {
     const event = parseUpdate(body);
     if (event.kind === 'unsupported' && event.updateId === null) return ok();
 
+    // The update id and its kind, never the text — enough to line a `wrangler tail`
+    // session up with one message.
+    this.deps.logger.log('info', 'telegram.webhook.received', {
+      updateId: event.updateId,
+      kind: event.kind,
+      ms: sinceReceipt(),
+    });
+
     // 2. Deduplicate in the database, never in memory: two deliveries of the same
     //    retry can land in different isolates, so an in-process guard would not see
     //    the other one.
+    const claimElapsed = startTimer(this.deps.clock);
     const claimed = await this.deps.gateway.claimUpdate(
       CHANNEL,
       event.updateId ?? '',
       this.deps.clock.now(),
     );
+    // The first database round trip of the request — and therefore the one that pays
+    // for a cold Neon compute, which is why it is measured separately from the rest.
+    this.deps.logger.log('info', 'telegram.webhook.claimed', {
+      updateId: event.updateId,
+      claimed,
+      ms: claimElapsed(),
+    });
     if (!claimed) {
       this.deps.logger.log('info', 'telegram.webhook.duplicate', { updateId: event.updateId });
       return ok();
     }
 
-    // 3 & 4. Answer now; work afterwards.
-    ctx.waitUntil(this.deps.dispatcher.dispatch(event));
+    // 3 & 4. Answer now; work afterwards. `receivedAt` travels with the event so the
+    // dispatcher's closing line can report the whole lifecycle, not just its own half.
+    ctx.waitUntil(this.deps.dispatcher.dispatch(event, receivedAt));
     return ok();
   }
 }

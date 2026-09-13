@@ -3,6 +3,7 @@ import type { Id, Instant, LocalDate, UserId } from '../core/shared/common';
 import type { DailyAllowanceService } from '../core/allowance/allowance-service';
 import type { LedgerService, ParseRoute, Transaction, ValidatedCandidate } from '../core/ledger/ledger-service';
 import { NoopLogger, type Logger } from '../observability/log';
+import { startTimer, timed } from '../observability/timing';
 import { localDateAt } from './dates';
 import { LlmParseError, type LlmParseResult, type LlmParser, type LlmUsage } from './llm-parser';
 import type { MechanicalTransactionParser } from './mechanical-parser';
@@ -94,8 +95,15 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
   async parse(text: string, context: UserParseContext): Promise<ParseOutcome> {
     const now = this.clock.now();
     const today = localDateAt(now, context.timezone);
+    // Pure and in-memory, so this should always read ~0ms. It is logged anyway: it is
+    // the control that proves a slow parse is the model or the database, not us.
+    const mechanicalElapsed = startTimer(this.clock);
     const normalized = this.normalizer.normalize(text);
     const candidate = this.mechanicalParser.parse(normalized, today);
+    this.logger.log('info', 'parse.mechanical', {
+      hasExactlyOneAmount: candidate.hasExactlyOneAmount,
+      ms: mechanicalElapsed(),
+    });
     const run = new ParseRun(this, context, candidate, today, now);
 
     // Things the rules already know for certain, and that no route may override:
@@ -199,11 +207,17 @@ export class TransactionParsingPipeline implements ParseEventCorrectionHook {
    * logged — is what lets `LedgerService.correct()` attribute a later fix back to it.
    */
   async persist(userId: UserId, candidate: ValidatedCandidate, parseEventId: Id): Promise<Transaction> {
-    const transaction = await this.ledger.record(userId, { ...candidate, parseEventId });
+    // The transaction write — the database round trip a recorded message pays for.
+    const transaction = await timed(this.logger, this.clock, 'parse.recorded', () =>
+      this.ledger.record(userId, { ...candidate, parseEventId }),
+    );
     // M5 recalculation trigger (M3 checklist 2e / M6 checklist 3). Income never
     // offsets a cap, so only categorised expenses/refunds need it.
-    if (candidate.direction !== 'income' && candidate.categoryId !== null) {
-      await this.allowance.availableToday(userId, candidate.categoryId);
+    const categoryId = candidate.categoryId;
+    if (candidate.direction !== 'income' && categoryId !== null) {
+      await timed(this.logger, this.clock, 'parse.allowance_recalculated', () =>
+        this.allowance.availableToday(userId, categoryId),
+      );
     }
     return transaction;
   }
@@ -440,7 +454,15 @@ class ParseRun {
       latencyMs: this.usage?.latencyMs ?? null,
       neededClarification,
     };
-    return this.pipeline.deps.parseEvents.record(event, this.pipeline.deps.clock.now());
+    // Route and token counts only, as M9 requires of the row itself — and the same is
+    // true of this line, which adds how long writing it took.
+    return timed(
+      this.pipeline.deps.logger,
+      this.pipeline.deps.clock,
+      'parse.event_recorded',
+      () => this.pipeline.deps.parseEvents.record(event, this.pipeline.deps.clock.now()),
+      { route },
+    );
   }
 
   /**

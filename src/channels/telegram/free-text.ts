@@ -8,6 +8,8 @@ import type { Id, Instant, LocalDate, UserId } from '../../core/shared/common';
 import { localDateAt } from '../../core/shared/local-date';
 import type { OutboundMessage } from '../../core/shared/messaging';
 import { sanitiseDisplayText } from '../../core/shared/text';
+import { NoopLogger, type Logger } from '../../observability/log';
+import { timed } from '../../observability/timing';
 import { mergeClarificationAnswer, type TransactionParsingPipeline } from '../../parsing/pipeline';
 import type { ParseOutcome, UserParseContext } from '../../parsing/types';
 import type { FreeTextHandler } from './dispatcher';
@@ -62,18 +64,31 @@ export interface TelegramFreeTextDeps {
    * midnight makes the bot call today's entry yesterday's.
    */
   clock: Clock;
+  /**
+   * Stage timing only (M9). Optional so every existing construction still compiles;
+   * without one this path is silent, as it was before.
+   */
+  logger?: Logger;
 }
 
 export const DROPPED_REPLY = 'Dropped it. Nothing was recorded.';
 export const MAPPING_DECLINED_REPLY = "No problem — I'll ask again next time.";
 
 export class TelegramFreeTextHandler implements FreeTextHandler {
-  constructor(private readonly deps: TelegramFreeTextDeps) {}
+  private readonly logger: Logger;
+
+  constructor(private readonly deps: TelegramFreeTextDeps) {
+    this.logger = deps.logger ?? new NoopLogger();
+  }
 
   /** Step 9: an ordinary message from someone with no open question. */
   async handleFreeText(userId: UserId, text: string): Promise<OutboundMessage> {
     const context = await this.contextFor(userId);
-    const outcome = await this.deps.pipeline.parse(text, context);
+    // M6 end to end: mechanical parse, merchant memory, the model, the ledger write.
+    // Its own `parse.*` and `llm_parse_ok` lines break this number down further.
+    const outcome = await timed(this.logger, this.deps.clock, 'telegram.freetext.parse', () =>
+      this.deps.pipeline.parse(text, context),
+    );
     return this.afterParse(context, outcome, text);
   }
 
@@ -311,6 +326,22 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
     parseEventId: Id | null,
     now: Instant,
   ): Promise<void> {
+    // `kind` is one of three literals from this module, not anything the user wrote.
+    return timed(
+      this.logger,
+      this.deps.clock,
+      'telegram.freetext.prompt_written',
+      () => this.writePrompt(userId, payload, parseEventId, now),
+      { kind: payload.kind },
+    );
+  }
+
+  private writePrompt(
+    userId: UserId,
+    payload: PendingPayload,
+    parseEventId: Id | null,
+    now: Instant,
+  ): Promise<void> {
     return this.deps.gateway.setPendingPrompt({
       userId,
       kind: payload.kind,
@@ -326,10 +357,15 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
    * a category the user has retired is not one the parser should propose.
    */
   private async contextFor(userId: UserId): Promise<UserParseContext> {
-    const [settings, categories] = await Promise.all([
-      this.deps.identity.getSettings(userId),
-      this.deps.categories.list(userId),
-    ]);
+    // Two database reads, run in parallel, before M6 sees the message at all — worth
+    // its own number so a slow context is not mistaken for a slow model.
+    const [settings, categories] = await timed(
+      this.logger,
+      this.deps.clock,
+      'telegram.freetext.context',
+      () =>
+        Promise.all([this.deps.identity.getSettings(userId), this.deps.categories.list(userId)]),
+    );
     return {
       userId,
       currencyCode: settings.currencyCode,
