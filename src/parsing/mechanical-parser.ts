@@ -215,9 +215,20 @@ const CURRENCY_WORDS: Readonly<Record<string, CurrencyCode>> = {
 };
 const CURRENCY_CODE_ALT = 'aud|usd|nzd|gbp|eur|jpy';
 const NUMBER = String.raw`(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?`;
-/** Bare integers immediately followed by one of these are quantities/units, not money. */
+/** Bare integers immediately followed by one of these are measures/units, never money. */
 const NON_MONEY_SUFFIX =
-  /^\s?(?:%|x\b|st\b|nd\b|rd\b|th\b|am\b|pm\b|kg\b|kgs\b|g\b|km\b|kms\b|m\b|l\b|ltr\b|ml\b|pcs?\b|hrs?\b|hours?\b|mins?\b|minutes?\b|people\b|ppl\b|pax\b|days?\b|weeks?\b|months?\b|nights?\b|yrs?\b|years?\b|of\b|coffees?\b|beers?\b|drinks?\b|tickets?\b|items?\b|bags?\b|packs?\b|boxes\b|slices?\b|pieces?\b|serves?\b|rounds?\b|eleven\b|x\d)/;
+  /^\s?(?:%|x\b|st\b|nd\b|rd\b|th\b|am\b|pm\b|kg\b|kgs\b|g\b|km\b|kms\b|m\b|l\b|ltr\b|ml\b|pcs?\b|hrs?\b|hours?\b|mins?\b|minutes?\b|people\b|ppl\b|pax\b|days?\b|weeks?\b|months?\b|nights?\b|yrs?\b|years?\b|of\b|eleven\b|x\d)/;
+/**
+ * Bare integers immediately followed by a countable item read as a count of that
+ * item — but only while the message offers some other number to read as money:
+ * "2 coffees $9" is $9, not $2. When the counted item's number is the ONLY number
+ * in the message it is the amount, because a lone bare number always is
+ * ("5 coffee" is $5, exactly like "coffee 5"). A real quantity claim says so with a
+ * multiplier — "2 x 5", "x3", "each", "apiece", "per person" — and that is
+ * `hasQuantityMultiplier`'s job, not this list's.
+ */
+const ITEM_COUNT_SUFFIX =
+  /^\s?(?:coffees?\b|beers?\b|drinks?\b|tickets?\b|items?\b|bags?\b|packs?\b|boxes\b|slices?\b|pieces?\b|serves?\b|rounds?\b)/;
 /** Bare integers immediately preceded by one of these are quantities/identifiers. */
 const NON_MONEY_PREFIX = /(?:x|#|no\.?|number|order|ref|invoice|inv|table|seat|bus|route|platform|unit|apt|level)\s?$/;
 
@@ -313,6 +324,8 @@ function blankSpans(text: string, spans: readonly Span[]): string {
 
 function extractAmounts(text: string, reserved: readonly Span[]): ExtractedAmount[] {
   const found: ExtractedAmount[] = [];
+  /** Start offsets of bare integers that count an item ("2 coffees") — demoted below. */
+  const itemCounts = new Set<number>();
   // Quantity/unit checks look at the neighbouring words with date tokens blanked,
   // so "70 day before yesterday" is $70 on a date, not "70 days".
   const context = blankSpans(text, reserved);
@@ -329,6 +342,7 @@ function extractAmounts(text: string, reserved: readonly Span[]): ExtractedAmoun
         if (NON_MONEY_PREFIX.test(context.slice(0, span.start))) continue;
         // Digits glued to letters ("7eleven", "h2o", "7-eleven", "covid-19") are not amounts.
         if (isGluedToWord(text, span)) continue;
+        if (ITEM_COUNT_SUFFIX.test(context.slice(span.end))) itemCounts.add(span.start);
       }
       found.push({ ...built, ...span });
     }
@@ -337,7 +351,12 @@ function extractAmounts(text: string, reserved: readonly Span[]): ExtractedAmoun
   // Bare integers are only money when nothing more explicit was found — otherwise
   // they're quantities ("2 coffees $9").
   const explicit = found.filter((a) => a.explicit);
-  return explicit.length > 0 ? explicit : found;
+  if (explicit.length > 0) return explicit;
+  // Same rule one step weaker: a number counting items gives way to any other bare
+  // number ("1 coffee 5" is $5), but when it is all there is, it is the amount —
+  // a lone bare number always is ("5 coffee" is $5).
+  const money = found.filter((a) => !itemCounts.has(a.start));
+  return money.length > 0 ? money : found;
 }
 
 const STANDALONE_CURRENCY = new RegExp(

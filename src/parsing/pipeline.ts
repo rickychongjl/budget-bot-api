@@ -13,6 +13,7 @@ import type { ParseEventRepository, ParseEventCorrectionHook, ParseEventInput } 
 import type {
   CategoryRef,
   ClarifyReason,
+  ExtractedAmount,
   MappingProposal,
   MechanicalCandidate,
   MerchantMappingSource,
@@ -363,17 +364,23 @@ class ParseRun {
     }
     this.usage = result.usage ?? null;
 
-    if (result.needsClarification) {
+    // The rules, not the model, decide whether a bare number is the amount.
+    const settled = result.needsClarification ? this.settledAmountDespiteModelDoubt(result) : null;
+    if (result.needsClarification && settled === null) {
       return this.clarify('llm', 'model_asked', result.clarificationQuestion ?? 'Can you tell me the amount, what it was for, and which category?');
     }
-    if (result.confidence < this.pipeline.deps.policy.confirmThreshold) {
+    // A settled amount also outranks low confidence: asking "what was the amount?"
+    // about a number the rules already read is the same question by another name.
+    if (settled === null && result.confidence < this.pipeline.deps.policy.confirmThreshold) {
       return this.clarify('llm', 'low_confidence', result.clarificationQuestion ?? 'I\'m not sure I got that — what was the amount and category?');
     }
 
     const merchantDisplay = result.merchant?.trim() || null;
     const fields: CandidateFields = {
       direction: result.intent,
-      amountDecimal: result.amount === null ? null : decimalText(result.amount),
+      // The model may have withheld the amount precisely because it read the bare
+      // number as a quantity; the settled amount stands in when it did.
+      amountDecimal: result.amount !== null ? decimalText(result.amount) : settled?.decimal ?? null,
       currencyCode: result.currency,
       transactionDate: result.transactionDate,
       categoryName: result.category,
@@ -392,7 +399,9 @@ class ParseRun {
     if (!validation.ok) return this.clarify('llm', validation.reason, validation.question);
 
     const proposal = this.mappingProposal(validation.category, merchantDisplay);
-    if (result.confidence < this.pipeline.deps.policy.recordThreshold) {
+    // The model did flag doubt, so this never records silently — it asks the user to
+    // confirm the candidate (amount included), which is not the forbidden question.
+    if (settled !== null || result.confidence < this.pipeline.deps.policy.recordThreshold) {
       const parseEventId = await this.logEvent('llm', false);
       return {
         kind: 'confirm',
@@ -410,6 +419,31 @@ class ParseRun {
   }
 
   // ---------------------------------------------------------------------------
+
+  /**
+   * Product decision, 13 Sep 2026: a single bare number in a message is always the
+   * transaction amount — "coffee 5", "5 coffee" and "$5 coffee" are all $5 — and the
+   * bot never asks whether a number is a quantity or a price.
+   *
+   * The rules already settle that before the model is called: `hasExactlyOneAmount`
+   * goes false the moment an explicit multiplier appears ("2 x 5", "x3", "each",
+   * "apiece", "per person"), so a genuine multi-item message clarified mechanically
+   * and never reached this route. Where the rules HAVE settled on one amount, the
+   * model may not reopen it — the instructions tell it not to, and this is what makes
+   * that a guarantee rather than a hope.
+   *
+   * A model question is still relayed whenever something it could legitimately be
+   * unsure about is missing: no settled amount, money-in (income vs refund is a
+   * documented must-ask — M6 "Clarification policy"), or no category to work with.
+   * When none of those hold, the only thing left to doubt is the amount, so the parse
+   * continues on the settled amount — as a `confirm`, never a silent record.
+   */
+  private settledAmountDespiteModelDoubt(result: LlmParseResult): ExtractedAmount | null {
+    if (!this.candidate.hasExactlyOneAmount) return null;
+    if (result.intent !== 'expense') return null;
+    if ((result.category ?? '').trim().length === 0) return null;
+    return this.candidate.amounts[0] ?? null;
+  }
 
   private async validateAndRecord(route: ParseRoute, fields: CandidateFields): Promise<ParseOutcome> {
     const validation: ValidationResult = this.pipeline.deps.validator.validate({
