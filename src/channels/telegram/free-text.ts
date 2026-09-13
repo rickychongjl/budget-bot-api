@@ -8,7 +8,7 @@ import type { Id, Instant, LocalDate, UserId } from '../../core/shared/common';
 import { localDateAt } from '../../core/shared/local-date';
 import type { OutboundMessage } from '../../core/shared/messaging';
 import { sanitiseDisplayText } from '../../core/shared/text';
-import { mergeClarificationAnswer, type TransactionParsingPipeline } from '../../parsing/pipeline';
+import type { TransactionParsingPipeline } from '../../parsing/pipeline';
 import type { ParseOutcome, UserParseContext } from '../../parsing/types';
 import type { FreeTextHandler } from './dispatcher';
 import type { GatewayRepository, PendingPrompt } from './gateway-repository';
@@ -74,7 +74,7 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
   async handleFreeText(userId: UserId, text: string): Promise<OutboundMessage> {
     const context = await this.contextFor(userId);
     const outcome = await this.deps.pipeline.parse(text, context);
-    return this.afterParse(context, outcome, text);
+    return this.afterParse(context, outcome);
   }
 
   /**
@@ -107,14 +107,11 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
           text,
         );
         // If M6 asks a *second* question, the message it would be answering is the
-        // merged one, not the original. `mergeClarificationAnswer` is M6's own
-        // exported rule and it is pure, so calling it here reads the same answer the
-        // pipeline just computed rather than guessing at it.
-        return this.afterParse(
-          context,
-          outcome,
-          mergeClarificationAnswer(payload.original, payload.reason, text),
-        );
+        // merged one, not the original — and the outcome carries it (`parsedText`).
+        // Re-deriving the merge here would mean holding half of M6's policy in M7,
+        // and the half that is not a pure function of the reason (an answer that
+        // restates the amount supersedes) would have been the half M7 got wrong.
+        return this.afterParse(context, outcome);
       }
       case 'confirm': {
         const answer = readYesNo(text);
@@ -158,8 +155,6 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
   private async afterParse(
     context: UserParseContext,
     outcome: ParseOutcome,
-    /** The text M6 was given. A `clarify` has to remember it to be answerable. */
-    parsedText: string,
   ): Promise<OutboundMessage> {
     const now = this.deps.clock.now();
     const today = localDateAt(now, context.timezone);
@@ -203,7 +198,9 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
           context.userId,
           {
             kind: 'clarify',
-            original: parsedText,
+            // What M6 parsed, which is the merged text once a conversation is more
+            // than one round old — not the message the user just typed.
+            original: outcome.parsedText,
             reason: outcome.reason,
             question: outcome.question,
             parseEventId: outcome.parseEventId,
@@ -238,7 +235,7 @@ export class TelegramFreeTextHandler implements FreeTextHandler {
       payload.parseEventId,
       payload.mappingProposal,
     );
-    return this.afterParse(context, outcome, payload.candidate.rawText);
+    return this.afterParse(context, outcome);
   }
 
   private async settleMapping(

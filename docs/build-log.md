@@ -2304,3 +2304,145 @@ either Bot API call failing surfaces as 502 with both outcomes).
 ### Open questions
 
 None new — this closes stage 4E's own gap rather than opening one.
+
+---
+
+## M6 — a clarification answer that restates the amount is no longer counted as a second one — 2026-09-13
+
+Found in production, in Ricky's own chat, the day 4E went live. Three messages, one
+$5, and a refusal that was nonsense:
+
+```text
+> coffee 5
+  Is this one coffee for $5, or two separate $5 coffee purchases?
+> one coffee for 5 dollars
+  Is this one transaction for $5, or two separate coffees of $5 each?
+> one transaction for $5
+  I found more than one amount — please send one transaction per message so I
+  record each correctly.
+```
+
+`coffee 5` carries one *bare* amount, so the mechanical layer passes it and the model
+asks the question its own instructions tell it to ask about a bare number
+(`needs_clarification` when an amount "cannot be determined without guessing"). That
+comes back as reason `model_asked`, which is not in `REPLACING_REASONS`, so each answer
+was **appended**: round two parsed `coffee 5 one coffee for 5 dollars`, round three
+`coffee 5 one coffee for 5 dollars one transaction for $5` — two *explicit* amounts by
+then, and `mechanicalGuard` refused the lot. Every further answer made it worse. The
+user had said "$5" three times and been told they had sent two transactions.
+
+### Built
+
+- **`mergeClarificationAnswer` gains a restatement branch** (`src/parsing/pipeline.ts`).
+  An answer also stands alone when the message we asked about **already carried an
+  amount** and the answer **states money the extractors are sure of** — either
+  unambiguously (`$5`, `5 dollars`, `4.50`) or as the same number already stated.
+  `REPLACING_REASONS` is untouched; so is `parse`; so is `hasMultipleAmounts`.
+- **`TransactionParsingPipeline.answerRestatesAmount`** — the evidence for that branch,
+  gathered by running the real extractors over the original and the answer separately.
+  It lives on the pipeline, not inside the pure merge function, because "does this text
+  state money" is the mechanical parser's question, not a string function's. The merge
+  stays pure and quotable and takes the answer as a fourth parameter defaulting to
+  `false`.
+- **`ParseOutcome`'s `clarify` variant gains `parsedText`** (`src/parsing/types.ts`) —
+  the exact text M6 parsed, which is the merged text on a second round. M7 stores it
+  verbatim. It previously re-derived the merge itself by calling
+  `mergeClarificationAnswer` from `free-text.ts`: half of M6's policy held in M7, and
+  exactly the half M7 would now have got wrong, since the restatement branch needs
+  extractors M7 does not have. `afterParse`'s third parameter goes with it.
+- **`docs/M6-nlp-parsing-merchant-memory.md`** — the clarification-policy section said
+  "every other reason means the original was fine but incomplete, so the answer is
+  appended", which is no longer the whole rule. Updated with the restatement branch and
+  with `parsedText`.
+
+### Decisions taken
+
+- **The fix is the merge policy, not `extractAmounts`/`hasMultipleAmounts`.** The
+  tempting alternative — "the same value twice is not two transactions" — was rejected:
+  it would apply to every message rather than to a clarification transcript, and
+  "coffee 5 and lunch 5" genuinely *is* two transactions. The evidence that two
+  mentions are the same money comes from the conversation's structure, which only the
+  merge knows. M6/M11 still require one transaction per message, and the eval's 13
+  `multi` cases still pass untouched.
+- **Not "move `model_asked`/`low_confidence` into `REPLACING_REASONS`".** They are not
+  topics, they are "the model asked something". Replacing wholesale loses the amount
+  whenever the question was about a missing category — the common case, and one
+  `pipeline.test.ts` already pins.
+- **Not "let the model tell us what its question was about".** A `question_topic` on the
+  LLM contract would work when the model classifies its own question correctly and lose
+  the original's amount when it does not: model-dependent policy for a mechanical
+  failure, plus an M6 contract change, new instructions, and a behaviour no scripted
+  test can honestly verify. The extractors already know everything needed.
+- **A bare number in the answer is not, on its own, a restatement.** It is the very
+  token the model could not tell from a quantity: "2" answering "one coffee or two?" is
+  a count, "Cafe 63" is a category name. Those still append and behave exactly as before
+  this change. Only a bare number repeating one the original already stated counts.
+
+### Assumed
+
+- **The restatement branch can cost a round trip, like the replacing branch already
+  does.** Answer "$5" to "one coffee or two?" and "coffee" goes with the original, so
+  the next question asks what it was for. Converges, never loops — the same cost 4D
+  recorded for the replacing branch, and far better than a refusal the conversation
+  cannot escape. Reconstructing the good half of the original is still off the table for
+  4D's reason: it means trusting the mechanical parser's residual description, which the
+  decimal-comma case shows cannot be trusted.
+- **A superseded transcript can leave a scruffy merchant key.** Parsing "one transaction
+  for $5" alone leaves `one` as the residual description, so the bot may offer to
+  remember "one". Nothing is written without an explicit yes, and the same artefact
+  already existed for every replacing reason; noted rather than fixed here.
+- **`raw_text` becomes the superseding answer, not the whole exchange.** It was already
+  a synthetic transcript rather than a single user message; this makes it shorter and
+  truer to the money recorded.
+
+### Verification
+
+`npm run typecheck` — clean, 0 errors.
+
+`npm test` — **749 passed / 10 skipped** across 54 files, up from 743 / 10: 6 new tests
+(5 in `test/unit/pipeline.test.ts`, 1 in `test/unit/telegram/free-text.test.ts`). No
+existing test changed. The 10 skipped are the `DATABASE_URL`-gated Neon suites and the
+live LLM eval; this worktree has no `.env`.
+
+**Every new test was run against a reverted fix and observed to fail**, per this repo's
+regression-test discipline (`test/unit/telegram/telegram-api-client.test.ts`'s own rule:
+prove the test catches the regression, not just that it is green). With the restatement
+branch removed, all four behavioural tests fail and the two non-regression guards — an
+amount appended to a message that had none, and an unrelated bare number — still pass,
+which is the point of them. The conversation test fails with the production sentence
+verbatim: *"I found more than one amount — please send one transaction per message so I
+record each correctly."*
+
+That conversation test is the closest thing this repo has to an e2e run, and
+deliberately not a mock of one: `test/unit/telegram/free-text.test.ts` drives the real
+dispatcher, the real `TelegramFreeTextHandler`, the real `TransactionParsingPipeline`
+(normaliser, extractors, validator, confidence policy) and the real M3/M4/M5 over
+in-memory repositories, as three separate Telegram messages with the `pending_prompt`
+row carrying the conversation between them. Only the model is scripted — scripted to say
+what the real one said. A true integration-tier test was considered and not written:
+nothing in this change is a Drizzle query, a constraint or a transaction, which is what
+that tier exists to prove, and `test/integration/gateway.test.ts` already covers the
+`pending_prompt` row itself against real Postgres.
+
+`npm run test:eval` — **158/158 = 100.0%**, unchanged, baseline held. `parse` is
+untouched by this change and the eval set is single-message by construction, so no
+labelled case exercises a clarification exchange; the 13 `multi` cases confirm the
+genuine two-amount guard still fires.
+
+`npm run test:integration` — **not run.** The Neon-gated suites need `DATABASE_URL` in a
+`.env` this worktree does not have. The PGlite-backed integration files ran as part of
+`npm test` above and pass.
+
+`npm run db:generate` — not run; no schema change.
+
+### Open questions
+
+1. **The model is being asked to disambiguate amounts it will keep asking about.**
+   `INSTRUCTIONS` tells it to set `needs_clarification` when an amount "cannot be
+   determined without guessing", and a bare number after a merchant ("coffee 5") trips
+   that even though the mechanical layer is perfectly happy with it. The merge no longer
+   breaks when it happens, but each occurrence is still a round trip and a message
+   against M8's daily cap. Whether the prompt should treat "one merchant, one bare
+   number" as unambiguous wants real traffic rather than a guess — a question for 4E's
+   walkthrough, alongside stage 4D's open question 2 (the confirm threshold), which is
+   about the same thing: how often the bot asks.
