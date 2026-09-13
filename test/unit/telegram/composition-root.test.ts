@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DueUser, SendOutcome } from '../../../src/core/allowance/allowance-service';
+import type { TelegramCallOutcome } from '../../../src/channels/telegram/telegram-api-client';
 import type { Env, Services } from '../../../src/index';
 import { MAX_DUE_USERS_PER_TICK, createApp, createServices, dispatchDueUsers, runScheduled } from '../../../src/index';
 import { NoopLogger } from '../../../src/observability/log';
@@ -146,6 +147,86 @@ describe('POST /internal/send-allowance', () => {
     const response = await app.fetch(post({ userId: 'user-7' }, SECRET), ENV);
 
     expect(await response.json()).toEqual(pending);
+  });
+});
+
+describe('POST /internal/register-commands', () => {
+  function registerPost(secret?: string): Request {
+    return new Request('https://budge-bot-api.test/internal/register-commands', {
+      method: 'POST',
+      headers: secret === undefined ? {} : { 'X-Internal-Dispatch-Secret': secret },
+    });
+  }
+
+  function stubTelegramApi(outcomes: { commands?: TelegramCallOutcome; webhook?: TelegramCallOutcome } = {}) {
+    const setMyCommandsCalls: unknown[][] = [];
+    const setWebhookCalls: unknown[][] = [];
+    const services = {
+      telegramApi: {
+        setMyCommands: async (...args: unknown[]) => {
+          setMyCommandsCalls.push(args);
+          return outcomes.commands ?? { ok: true };
+        },
+        setWebhook: async (...args: unknown[]) => {
+          setWebhookCalls.push(args);
+          return outcomes.webhook ?? { ok: true };
+        },
+      },
+    } as unknown as Services;
+    return { services, setMyCommandsCalls, setWebhookCalls };
+  }
+
+  it('refuses a missing secret with 401 and never builds services', async () => {
+    let built = 0;
+    const app = createApp(() => {
+      built += 1;
+      return {} as Services;
+    });
+
+    const response = await app.fetch(registerPost(), ENV);
+
+    expect(response.status).toBe(401);
+    expect(built).toBe(0);
+  });
+
+  it('refuses a wrong secret with 401', async () => {
+    const { services } = stubTelegramApi();
+    const app = createApp(() => services);
+
+    const response = await app.fetch(registerPost('wrong'), ENV);
+
+    expect(response.status).toBe(401);
+  });
+
+  it('registers the full catalogue and points the webhook at this deployment', async () => {
+    const { services, setMyCommandsCalls, setWebhookCalls } = stubTelegramApi();
+    const app = createApp(() => services);
+
+    const response = await app.fetch(registerPost(SECRET), ENV);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { ok: boolean; commandsRegistered: number };
+    expect(body.ok).toBe(true);
+
+    // One source of truth: whatever command-router.ts's own catalogue contains.
+    const registered = setMyCommandsCalls[0]![0] as { command: string; description: string }[];
+    expect(registered.length).toBeGreaterThan(0);
+    expect(body.commandsRegistered).toBe(registered.length);
+    expect(registered.every((c) => typeof c.command === 'string' && typeof c.description === 'string')).toBe(true);
+
+    expect(setWebhookCalls).toEqual([['https://budge-bot-api.test/telegram/webhook', 'webhook-secret']]);
+  });
+
+  it('reports a 502 with both outcomes when Telegram rejects either call', async () => {
+    const { services } = stubTelegramApi({ commands: { ok: false, status: 400, description: 'bad', retryAfterSeconds: null } });
+    const app = createApp(() => services);
+
+    const response = await app.fetch(registerPost(SECRET), ENV);
+
+    expect(response.status).toBe(502);
+    const body = (await response.json()) as { setMyCommands: TelegramCallOutcome; setWebhook: TelegramCallOutcome };
+    expect(body.setMyCommands.ok).toBe(false);
+    expect(body.setWebhook.ok).toBe(true);
   });
 });
 
