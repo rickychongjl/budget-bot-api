@@ -2307,6 +2307,65 @@ None new — this closes stage 4E's own gap rather than opening one.
 
 ---
 
+## M6 — a bare number is always the amount — 2026-09-13
+
+**Branch:** `worktree-agent-a561ed7952a71cf9a` · **Module:** M6 (`docs/M6-nlp-parsing-merchant-memory.md`)
+
+Product decision from Ricky, taken as scope: a number in a message — with or without a
+`$` — is always the transaction amount. `coffee 5` and `5 coffee` are $5, and the bot
+must never ask whether a number is a quantity or a price. Only the amount question is
+removed; category/merchant resolution and its confirmations are untouched.
+
+Two separate things had to change, because the assumed cause was only half of it.
+
+### Built
+
+- **`parsing/mechanical-parser.ts` — `ITEM_COUNT_SUFFIX`, split out of `NON_MONEY_SUFFIX`.**
+  `5 coffee` extracted **no amount at all** before this: the bare 5 was demoted by the
+  `coffees?|beers?|drinks?|tickets?|…` arm of `NON_MONEY_SUFFIX`, so the message reached
+  the model with nothing settled, which is what let the model come back asking whether 5
+  was a quantity or a price. Those countable-item words are now their own list and demote
+  a bare integer only one step: it still gives way to any other number in the message
+  (`2 coffees $9` → $9, `1 coffee 5` → $5, `1 ticket 25` → $25), but when it is the only
+  number there is, it is the amount. Measures and units (`kg`, `km`, `ppl`, `days`, `%`,
+  `x`, ordinals, times) stay in `NON_MONEY_SUFFIX` and are unchanged.
+- **`parsing/pipeline.ts` — `ParseRun.settledAmountDespiteModelDoubt`.** A model
+  `needs_clarification` is no longer relayed when the rules have already settled exactly
+  one amount **and** the model returned an expense **and** named a category — in that
+  situation nothing it could legitimately be unsure about is missing, so the question can
+  only be it second-guessing the amount. The parse continues on the settled amount (which
+  also stands in when the model withheld `amount` because it read the number as a
+  quantity), and always as a `confirm`, never a silent record. A settled amount outranks
+  the low-confidence gate too, since "what was the amount?" is the same question by
+  another name.
+- **`infrastructure/llm/openai-parser.ts` — `INSTRUCTIONS`.** The `amount` rule now says a
+  number with no currency symbol is still the amount, that a lone number is never a count
+  of items, and that only an explicit multiplier (`2 x 5`, `3 each`, `4 apiece`,
+  `per person`) states a quantity; the `needs_clarification` rule no longer lists the
+  amount as a reason to ask when the message carries one number. Prompt contents are
+  otherwise unchanged, so M9's privacy invariant (text + category names + currency, and
+  nothing else) still holds.
+
+### Assumed
+
+- **`hasQuantityMultiplier` is the only real quantity signal, and it is untouched.**
+  `2 x 5`, `x3`, `each`, `apiece`, `per person` still force `hasMultipleAmounts`, so
+  `2 coffees at 4.50 each`, `3 drinks apiece $4`, `3 x $12 tickets` and `coffee 4.50 x2`
+  still clarify `multiple_amounts` mechanically, with no model call. `2 coffees x 5` now
+  reaches that guard instead of falling through to the model with nothing extracted —
+  the same answer by a cheaper route.
+- **A lone counted item with no price is now an amount: `2 coffees` records $2.**
+  This follows directly from "a bare number is always the amount" and is the one case
+  where the new rule is arguable. Flagged rather than hidden; it was previously an LLM
+  round trip that ended in "how much was it?".
+- **The guard deliberately excludes money-in.** Income/refund ambiguity (`Alex gave me 80`)
+  is a documented must-ask in M6 "Clarification policy", so `intent !== 'expense'` always
+  relays the model's question, as does a model answer with no category
+  (`spent 30 last night`).
+- **No eval label was stale.** Every bare-number case in `test/eval/cases.v1.ts` that
+  expects a clarification expects it for a *different* reason — several amounts, a decimal
+  comma, a foreign currency, an impossible date, a correction, a missing category, or
+  money-in. Nothing was relabelled and `EVAL_SET_VERSION` stays at 1.
 ## Free daily cap no longer applies to any command — 2026-09-13
 
 **Authorised scope change, Ricky, 13 Sep 2026**, quoted so the reversal is traceable
@@ -2448,6 +2507,34 @@ Wording calls, all cheap to change if Ricky wants them differently:
 
 `npm run typecheck` — clean, 0 errors.
 
+`npm test` — **752 passed / 10 skipped**, up from 743 passed / 10 skipped on the same
+tree: 9 new cases (3 in `test/unit/mechanical-parser.test.ts`, 6 in
+`test/unit/pipeline.test.ts`). The 10 skips are the Neon-gated integration files and the
+live-LLM eval; this environment has no `DATABASE_URL`.
+
+`npm run test:eval` — **158/158 = 100.0%**, unchanged against the committed baseline
+(`baseline.json` ratchet at 1.0); the live suite skipped, no `OPENAI_API_KEY`.
+
+`npm run test:integration` — **not run**: no `DATABASE_URL` in this environment. This
+change touches no schema, no query and no repository.
+
+Regression discipline: with the three source files reverted and the new tests kept, 4 of
+the new cases fail (`5 coffee` extracts nothing; `2 coffees x 5` is not flagged; the two
+pipeline cases clarify instead of recording/confirming). Restored, all pass.
+
+### Open questions
+
+1. **The eval set does not yet cover this.** The deterministic tier scripts the model, so
+   it cannot catch the model ignoring the new instruction — only a `live`-labelled case
+   can. Adding `coffee 5` / `5 coffee` / `sandwich 5` cases means appending to
+   `cases.v1.ts` and bumping `EVAL_SET_VERSION` (and re-measuring the baseline), which is
+   a deliberate versioning decision rather than something to fold into a behaviour fix.
+   Worth doing before the model choice is rechecked for launch.
+2. **Should `2 coffees` with no price really record $2, or ask?** The product decision as
+   stated says record. If that reads wrong in practice, the narrow alternative is to keep
+   the item-count demotion absolute for *plural* items only — but that would also make
+   `5 coffees` ask, which is the same shape as `5 coffee`, so it is a real trade-off, not
+   an oversight.
 `npm test` — **748 passed / 10 skipped**, up from 743 passed / 10 skipped on this branch's
 base: the 5 new onboarding cases. The 10 skips are environmental, not new — 9 Postgres
 tests and the live-LLM eval, neither gated credential being present in this worktree.

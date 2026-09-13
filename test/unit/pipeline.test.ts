@@ -97,6 +97,75 @@ describe('TransactionParsingPipeline — confidence policy', () => {
   });
 });
 
+/**
+ * Product decision, 13 Sep 2026: a bare number is always the transaction amount, and
+ * the bot never asks whether it is a quantity or a price. Only the amount question is
+ * removed — category/merchant resolution is untouched.
+ */
+describe('TransactionParsingPipeline — a bare number is always the amount', () => {
+  it.each(['coffee 5', '5 coffee', '$5 coffee'])('records "%s" as five dollars, with no model call and no question', async (text) => {
+    const h = makeHarness();
+    const outcome = await h.pipeline.parse(text, h.context);
+    expect(outcome).toMatchObject({ kind: 'recorded', route: 'mapping' });
+    expect(h.ledger.recorded[0]!.candidate).toMatchObject({
+      direction: 'expense',
+      amountMinorUnits: 500n,
+      categoryId: categoryId('Coffee'),
+    });
+    expect(h.llm.calls).toHaveLength(0);
+  });
+
+  it('ignores a model question that only second-guesses a settled amount', async () => {
+    const h = makeHarness({
+      seedMappings: false,
+      llm: llmResult({
+        intent: 'expense',
+        // Exactly the failure this fixes: the model read the 5 as five sandwiches,
+        // withheld the amount, and asked.
+        amount: null,
+        merchant: 'Sandwich shop',
+        category: 'Eating Out',
+        confidence: 0.4,
+        needsClarification: true,
+        clarificationQuestion: 'Is that 5 sandwiches or $5?',
+      }),
+    });
+
+    const outcome = await h.pipeline.parse('sandwich 5', h.context);
+
+    expect(outcome.kind).toBe('confirm');
+    if (outcome.kind !== 'confirm') return;
+    expect(outcome.candidate).toMatchObject({ amountMinorUnits: 500n, categoryId: categoryId('Eating Out') });
+    expect(h.parseEvents.events[0]!.neededClarification).toBe(false);
+  });
+
+  it('still relays a model question when something other than the amount is missing', async () => {
+    const h = makeHarness({ seedMappings: false });
+    h.llm.enqueue(
+      // Money-in that could be income or a refund — a documented must-ask (M6).
+      llmResult({ intent: 'income', amount: 80, confidence: 0.4, needsClarification: true, clarificationQuestion: 'Refund, or new money in?' }),
+      // No category to work with.
+      llmResult({ intent: 'expense', amount: 30, confidence: 0.4, needsClarification: true, clarificationQuestion: 'What was the $30 for?' }),
+    );
+
+    expect(await h.pipeline.parse('alex gave me 80', h.context)).toMatchObject({ kind: 'clarify', reason: 'model_asked' });
+    expect(await h.pipeline.parse('spent 30 last night', h.context)).toMatchObject({ kind: 'clarify', reason: 'model_asked' });
+  });
+
+  it('still asks to split explicit multiplier phrasing, without a model call', async () => {
+    for (const text of ['2 coffees at 4.50 each', '3 drinks apiece $4', '3 x $12 tickets', 'coffee 4.50 x2']) {
+      const h = makeHarness();
+      expect(await h.pipeline.parse(text, h.context), text).toMatchObject({
+        kind: 'clarify',
+        route: 'mechanical',
+        reason: 'multiple_amounts',
+      });
+      expect(h.llm.calls, text).toHaveLength(0);
+      expect(h.ledger.recorded, text).toHaveLength(0);
+    }
+  });
+});
+
 describe('TransactionParsingPipeline — parse_event', () => {
   it('writes token usage and latency from the LLM route, no text', async () => {
     const h = makeHarness({ llm: woolworthsGuess, seedMappings: false });
