@@ -139,6 +139,10 @@ describe('onboarding prompts', () => {
     expect(message.replyMarkup).toBeUndefined();
     expect(message.text).toContain('1. Zone 0');
     expect(message.text).toContain(`${options.length}. Zone ${options.length - 1}`);
+    // Nothing here is tappable — Telegram shows no keyboard for a plain numbered
+    // list, so the reply has to say how to answer regardless of what the prompt's
+    // own text assumes.
+    expect(message.text).toContain('Reply with a number or a name.');
   });
 
   it('falls back to plain text when a value will not fit in callback_data', () => {

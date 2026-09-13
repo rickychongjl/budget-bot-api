@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { DueUser, SendOutcome } from '../../../src/core/allowance/allowance-service';
 import type { TelegramCallOutcome } from '../../../src/channels/telegram/telegram-api-client';
 import type { Env, Services } from '../../../src/index';
-import { MAX_DUE_USERS_PER_TICK, createApp, createServices, dispatchDueUsers, runScheduled } from '../../../src/index';
+import { MAX_DUE_USERS_PER_TICK, createApp, createServices, dispatchDueUsers, runScheduled, timezoneForAdmission } from '../../../src/index';
+import { RefusalError } from '../../../src/core/shared/errors';
 import { NoopLogger } from '../../../src/observability/log';
 import { TestClock } from '../../support/test-clock';
 
@@ -333,5 +334,39 @@ describe('createServices', () => {
     for (const name of ['identity', 'onboarding', 'entitlements', 'budgets', 'ledger', 'categories', 'allowance', 'reminders', 'sender'] as const) {
       expect(services[name], name).toBeDefined();
     }
+  });
+});
+
+describe('timezoneForAdmission', () => {
+  // Regression: a real go-live bug. `admitMessage`'s fair-use check calls this before
+  // the onboarding machine ever sees a message (dispatcher routing order, step 3 vs
+  // step 7) — without the fallback, no sign-up could ever get past the timezone
+  // question, because answering it is itself a message that needs to be admitted.
+  it('falls back to UTC when the user has not finished onboarding', async () => {
+    const identity = {
+      getSettings: async () => {
+        throw new RefusalError('ONBOARDING_REQUIRED', 'Finish /start first — a timezone has not been chosen yet.');
+      },
+    };
+
+    await expect(timezoneForAdmission(identity, 'user-1')).resolves.toBe('UTC');
+  });
+
+  it('returns the real timezone once one is set', async () => {
+    const identity = {
+      getSettings: async () => ({ timezone: 'Australia/Brisbane' }) as Awaited<ReturnType<Services['identity']['getSettings']>>,
+    };
+
+    await expect(timezoneForAdmission(identity, 'user-1')).resolves.toBe('Australia/Brisbane');
+  });
+
+  it('does not mask an unrelated failure as a missing timezone', async () => {
+    const identity = {
+      getSettings: async () => {
+        throw new RefusalError('RESOURCE_NOT_FOUND', 'No such user.');
+      },
+    };
+
+    await expect(timezoneForAdmission(identity, 'user-1')).rejects.toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
   });
 });

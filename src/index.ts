@@ -12,6 +12,7 @@ import { createReminderCapacityReader } from './core/allowance/index';
 import { DefaultBudgetService } from './core/budgets/default-budget-service';
 import { createEntitlementService } from './core/entitlements/default-entitlement-service';
 import { DefaultIdentityService } from './core/identity/default-identity-service';
+import type { IdentityService } from './core/identity/identity-service';
 import { OnboardingService } from './core/identity/onboarding';
 import { DefaultCategoryService } from './core/ledger/default-category-service';
 import { DefaultLedgerService } from './core/ledger/default-ledger-service';
@@ -19,6 +20,7 @@ import { SystemClock } from './core/shared/clock';
 import type { DueUser } from './core/allowance/allowance-service';
 import type { Clock } from './core/shared/clock';
 import type { UserId } from './core/shared/common';
+import { RefusalError } from './core/shared/errors';
 import type { MessageSender } from './core/shared/messaging';
 import { createParsingPipeline } from './infrastructure/create-parsing-pipeline';
 import { createDatabase } from './infrastructure/database/client';
@@ -103,6 +105,30 @@ export interface CreateServicesOptions {
 export type ServicesFactory = (env: Env) => Services;
 
 /**
+ * M8's `EntitlementService.timezoneOf` port, wired to M2. Exported so the fallback
+ * below is directly unit-testable without a database.
+ *
+ * A user who has not finished onboarding has no timezone yet — including on the very
+ * message that would set one. The dispatcher's routing order runs admission (M8,
+ * step 3) before the onboarding machine sees the message (step 7), so without this
+ * fallback `admitMessage`'s fair-use check throws `ONBOARDING_REQUIRED` on every
+ * message until a timezone exists, and no sign-up can ever complete. Fair use only
+ * needs *a* day boundary to rate-limit against; UTC is fine until the real one is
+ * known. Any other failure (a genuinely missing user) still propagates.
+ */
+export async function timezoneForAdmission(
+  identity: Pick<IdentityService, 'getSettings'>,
+  userId: UserId,
+): Promise<string> {
+  try {
+    return (await identity.getSettings(userId)).timezone;
+  } catch (error) {
+    if (RefusalError.is(error, 'ONBOARDING_REQUIRED')) return 'UTC';
+    throw error;
+  }
+}
+
+/**
  * The wiring each module's own `index.ts` header prescribes, in dependency order.
  *
  * Four cycles are unavoidable and are broken the same way M5's test harness breaks
@@ -154,7 +180,7 @@ export function createServices(env: Env, options: CreateServicesOptions = {}): S
       countActiveCategories: ledgerRepository.capacity.countActiveCategories,
       countReminderCategories: createReminderCapacityReader(allowanceRepository),
     },
-    timezoneOf: (userId) => identity.getSettings(userId).then((s) => s.timezone),
+    timezoneOf: (userId) => timezoneForAdmission(identity, userId),
     clock,
   });
 
