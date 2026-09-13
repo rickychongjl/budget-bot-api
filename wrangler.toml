@@ -30,7 +30,7 @@ enabled = true
 # account (visible on the Workers dashboard, or after the first `wrangler deploy`).
 # `budge-bot-api.workers.dev` below is a placeholder, not a real reachable URL.
 [vars]
-WORKER_BASE_URL = "https://budge-bot-api.workers.dev"
+WORKER_BASE_URL = "https://budge-bot-api.rickychongjl.workers.dev"
 
 # Workers Cron Triggers — the only "background process" available on the Free plan.
 # M5's daily-allowance scheduler runs every 15 minutes (Adelaide/Darwin are UTC+9:30,
@@ -46,4 +46,4 @@ crons = ["*/15 * * * *"]
 # then paste its id below. Not a secret, but environment-specific.
 [[hyperdrive]]
 binding = "HYPERDRIVE"
-id = "REPLACE_WITH_HYPERDRIVE_ID"
+id = "b57442266734436a9d0d61f459ff903d"

@@ -54,7 +54,12 @@ export class TelegramApiClient {
 
   constructor(options: TelegramApiClientOptions) {
     this.#token = options.token;
-    this.#fetch = options.fetch ?? fetch;
+    // `.bind(globalThis)`, not the bare reference: the Workers runtime's `fetch` is
+    // brand-checked and throws "Illegal invocation" once it's stored on an object and
+    // later invoked as `this.#fetch(...)` (a method call sets `this` to the instance,
+    // not the global scope `fetch` requires). A test double doesn't care about `this`,
+    // so this only matters for the real one.
+    this.#fetch = options.fetch ?? fetch.bind(globalThis);
     this.#logger = options.logger;
   }
 
@@ -71,10 +76,20 @@ export class TelegramApiClient {
         body: JSON.stringify(payload),
       });
     } catch (error) {
-      // Deliberately not `error.message` — a runtime's fetch failure message can quote
-      // the request URL, and the URL contains the token.
+      // `error.message` can quote the request URL, and the URL contains the token —
+      // every occurrence of the token itself is scrubbed before this reaches the
+      // logger, rather than dropping the message outright, so a real failure reason
+      // (bad host, TLS, a malformed URL) is still diagnosable from the logs.
       const name = error instanceof Error ? error.name : 'unknown';
-      this.#logger?.log('warn', 'telegram.call.network_error', { method, error: name });
+      const message =
+        error instanceof Error && error.message
+          ? error.message.split(this.#token).join('[redacted]')
+          : undefined;
+      this.#logger?.log('warn', 'telegram.call.network_error', {
+        method,
+        error: name,
+        ...(message === undefined ? {} : { message }),
+      });
       return { ok: false, status: 0, description: null, retryAfterSeconds: null };
     }
 
