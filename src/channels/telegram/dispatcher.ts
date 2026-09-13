@@ -72,13 +72,21 @@ export interface CallbackAcknowledger {
 }
 
 /**
- * Stage 4D's seam. The dispatcher already knows *when* free text and an open prompt
- * should be handled; what it cannot do yet is parse an expense. 4D supplies this and
- * changes no routing.
+ * The free-text path (stage 4D). The dispatcher decides *when* a message is free
+ * text, an answer to an open question, or a press of one of the two buttons that
+ * path puts on screen; everything after that — M6, the prompt row, the wording — is
+ * behind this seam.
+ *
+ * Every method returns exactly one message, including its failure cases: a stale
+ * button and an undecodable prompt both answer `STALE_ACTION` rather than throwing.
  */
 export interface FreeTextHandler {
   handleFreeText(userId: UserId, text: string, now: Instant): Promise<OutboundMessage>;
   handlePromptAnswer(userId: UserId, text: string, now: Instant): Promise<OutboundMessage>;
+  /** `pc:yes` / `pc:no` — record the candidate the bot asked about, or drop it. */
+  answerConfirm(userId: UserId, yes: boolean, now: Instant): Promise<OutboundMessage>;
+  /** `map:yes` / `map:no` — remember this merchant's category, or keep asking. */
+  answerMapping(userId: UserId, yes: boolean, now: Instant): Promise<OutboundMessage>;
 }
 
 export interface DispatcherDeps {
