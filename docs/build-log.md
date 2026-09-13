@@ -2208,3 +2208,50 @@ snapshot; one `alter table` adding the column, one adding the foreign key.
 ### Open questions
 
 None new. M6's own open question 2 and 4D's open question 1 are both closed by this.
+
+---
+
+## Testing infra — M6's eval suite was silently dead — 2026-09-13
+
+Found while answering "is there an end-to-end test for a user's natural-language
+message reaching M6?" — the honest answer was that the closest thing to one,
+`test/eval/deterministic.eval.test.ts` (158 labelled realistic messages against the
+real pipeline) and `test/eval/live-llm.eval.test.ts` (the same style against the real
+model), existed and were well-built but had not run on a single `npm test` or CI
+build since `vitest.config.ts` was split into `projects`. With `projects` configured,
+a file is only collected if some project's `include` matches it, and only `unit` and
+`integration` were ever defined — `npx vitest run test/eval/deterministic.eval.test.ts`
+reported "No test files found" even pointed straight at the file. The original M6 PR's
+build-log entry ("Tests: 71 pass, 1 skipped (the live eval)") shows the suite really did
+run before that split; nobody re-added it after.
+
+### Built
+
+- **`vitest.config.ts`** — a third project, `eval`, matching `test/eval/**/*.eval.test.ts`.
+  Runs by default alongside `unit` and `integration` on plain `npm test`/CI, the same
+  as the `integration` project's two Neon-gated files already do: the deterministic
+  suite needs no DB and no network, and the live suite self-skips via
+  `describe.skipIf(!apiKey)` exactly like those two skip without `DATABASE_URL`.
+  Confirmed safe before landing this: this environment's `.env` carries an empty
+  `OPENAI_API_KEY=` line, and the live suite skipped rather than making a real call.
+- **`package.json`** — `test:eval` script (`vitest run --project eval`), mirroring
+  `test:integration`, for running just this tier — e.g. with a real
+  `OPENAI_API_KEY` set, to score the live suite without re-running everything else.
+
+### Verification
+
+`npm run test:eval` — **2 passed / 1 skipped** (the live suite, no key configured).
+
+`npm test` — **744 passed / 1 skipped**, up from 742 passed / 0 skipped: the two eval
+tests, one of which is the live suite's permanent skip in an environment with no
+usable key.
+
+`npm run typecheck` — clean, 0 errors.
+
+### Open questions
+
+1. **Should CI set `OPENAI_API_KEY` and actually run the live suite?** It costs money
+   and is non-deterministic by design, which is exactly why `live-llm.eval.test.ts`'s
+   own header says "never in CI by default" — restoring collection doesn't change that
+   call, since it still needs a key CI does not have. Worth a deliberate decision
+   separate from this fix, not a default to fall into.
