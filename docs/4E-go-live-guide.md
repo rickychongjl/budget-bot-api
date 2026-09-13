@@ -56,14 +56,21 @@ This is the only bot token you will ever need for this project — no separate t
 
 ---
 
-## Step 4 — Set up Cloudflare and find your Workers subdomain
+## Step 4 — Confirm your Cloudflare account
 
-1. Sign up / log in at dash.cloudflare.com.
-2. Go to **Workers & Pages**. If this is a new account, Cloudflare will ask you to
-   pick a `*.workers.dev` subdomain (e.g. `ricky-dev`) — this becomes part of your
-   Worker's public URL: `https://budge-bot-api.<your-subdomain>.workers.dev`.
-3. Note your **Account ID** too (right-hand sidebar of the Workers & Pages overview
-   page) — needed later only if you wire up GitHub Actions auto-deploy (Step 16).
+1. Sign up / log in at dash.cloudflare.com. If you already have `budge-bot-site` (the
+   marketing site, a separate Pages project) there, you already have an account —
+   nothing new to create.
+2. **Do not** click "Create application" on the Workers & Pages page. `npm run deploy`
+   (Step 11) creates the Worker for you, from `wrangler.toml`'s `name` field — "Create
+   application" starts Cloudflare's own interactive scaffold instead, a different
+   deploy path than the one this repo already uses.
+3. Note your **Account ID** for later (Step 16's GitHub Actions secret, not needed
+   before then) — it's the long hex string in the dashboard's own URL:
+   `dash.cloudflare.com/<account-id>/workers-and-pages`.
+
+You don't need to find or choose a `*.workers.dev` subdomain manually — Step 11's
+first deploy tells you what it is.
 
 ---
 
@@ -109,17 +116,12 @@ id = "<paste the real id here>"
 
 ---
 
-## Step 8 — Point `WORKER_BASE_URL` at your real subdomain
+## Step 8 — `WORKER_BASE_URL`: leave it for now
 
-Still in `wrangler.toml`, replace the placeholder with your actual subdomain from
-Step 4:
-
-```toml
-[vars]
-WORKER_BASE_URL = "https://budge-bot-api.<your-subdomain>.workers.dev"
-```
-
-This matters before the first cron tick: the scheduler dispatches to this exact URL.
+`wrangler.toml` still has a placeholder here (`https://budge-bot-api.workers.dev`).
+Leave it as-is — you don't know your real subdomain yet, and Step 11's first deploy
+will tell you. Just don't forget to come back and fix it before Step 14 (the cron
+fan-out dispatches to whatever this value says).
 
 ---
 
@@ -162,14 +164,28 @@ Neon branch.
 
 ---
 
-## Step 11 — Deploy the Worker
+## Step 11 — Deploy the Worker (twice)
 
 ```powershell
 npm run deploy
 ```
 
-This runs `wrangler deploy`. Confirm it reports success and shows your Worker's URL —
-it should match what you put in `WORKER_BASE_URL` (Step 8).
+This runs `wrangler deploy`, creates the Worker on your account (first time only —
+this is what makes "Create application" unnecessary), and prints its real URL, e.g.
+`https://budge-bot-api.ricky-dev.workers.dev`.
+
+That printed URL is your real `WORKER_BASE_URL`. Open `wrangler.toml`, replace the
+placeholder from Step 8 with it, then deploy again so the Worker picks up the
+corrected `[vars]`:
+
+```toml
+[vars]
+WORKER_BASE_URL = "https://budge-bot-api.<your-actual-subdomain>.workers.dev"
+```
+
+```powershell
+npm run deploy
+```
 
 ---
 
